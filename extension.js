@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v3.6 (Solid Edit/Delete, Better Paragraph/List Spacing, Light UI)
+// @name         Persistent Highlighter + Notes — v3.7 (Tight List Spacing, Solid Edit/Delete, Light UI)
 // @namespace    qt-highlighter
-// @version      3.6.0
+// @version      3.7.0
 // @description  Select text → Add → Markdown note. Hover shows popover (edit, delete, pin, color). Robust persistence (GM storage + XPath), no duplicate wrapping, works in iframes & SPA rerenders.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
@@ -65,10 +65,10 @@
     .uw-pop .uw-colors { display:flex; gap:6px; margin-left:auto; }
     .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:340px; overflow:auto; color:#222; }
 
-    /* Spacing rules INSIDE the rendered markdown */
-    .uw-pop .uw-content p { margin: 10px 0; }            /* more separation between paragraphs */
-    .uw-pop .uw-content ul { margin: 6px 0 6px 18px; }   /* modest list margins */
-    .uw-pop .uw-content ul li { margin: 2px 0; }         /* tighter spacing between bullets */
+    /* Spacing INSIDE rendered notes */
+    .uw-pop .uw-content p { margin: 10px 0; }           /* paragraph separation */
+    .uw-pop .uw-content ul { margin: 4px 0; padding-left: 18px; }  /* small margin above/below lists */
+    .uw-pop .uw-content ul li { margin: 0; }             /* no extra space between bullets */
     .uw-pop .uw-content code { background:#f6f6f6; padding:2px 4px; border-radius:4px; }
     .uw-pop .uw-content pre { background:#f6f6f6; padding:8px; border-radius:6px; overflow:auto; }
   `);
@@ -84,11 +84,11 @@
   function deleteByUid(uid){ const arr=load(); const i=arr.findIndex(r=>r.uid===uid); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
   function deleteByAnchor(a){ const arr=load(); const i=arr.findIndex(r=>r.startXPath===a.startXPath&&r.startOffset===a.startOffset&&r.endXPath===a.endXPath&&r.endOffset===a.endOffset); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
 
-  // ---------- Markdown (lists first, then inline) ----------
+  // ---------- Markdown (NO <p> wrappers around lists) ----------
   function esc(s){ return s.replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m])); }
   function mdToHtml(md){
     if (!md) return '';
-    // code blocks first (placeholder tokens)
+    // capture fenced code blocks
     const blocks = [];
     md = md.replace(/```([\s\S]*?)```/g, (_,code)=>{ blocks.push(code); return `\uE000${blocks.length-1}\uE000`; });
 
@@ -102,7 +102,7 @@
                .replace(/^## (.+)$/gm,'<h2>$1</h2>')
                .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
 
-    // lists (treat lines starting with "- " or "* ")
+    // Build lists first
     const lines = text.split('\n'); let out=[], inList=false;
     for (const line of lines){
       if (/^\s*[-*]\s+/.test(line)) {
@@ -116,15 +116,21 @@
     if (inList) out.push('</ul>');
     text = out.join('\n');
 
-    // paragraphs (double newline = new paragraph; single newline = <br>)
-    text = text.split(/\n{2,}/).map(p=>`<p>${p.replace(/\n/g,'<br>')}</p>`).join('');
+    // Paragraphs: wrap ONLY plain-text blocks; leave UL/HEADINGS/PRE as-is
+    const blocks2 = text.split(/\n{2,}/).map(b => b.trim());
+    const htmlBlocks = blocks2.map(b => {
+      if (!b) return '';
+      const startsWithHtml = /^(<ul>|<h[1-6]\b|<pre\b|<\/ul>)/.test(b) || b.includes('<li>');
+      return startsWithHtml ? b : `<p>${b.replace(/\n/g,'<br>')}</p>`;
+    });
+    text = htmlBlocks.join('');
 
     // inline formatting
     text = text.replace(/`([^`]+)`/g, '<code>$1</code>')
                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>'); // italic (avoid list markers)
+               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>'); // italic (not list markers)
 
-    // restore code blocks
+    // restore fenced code blocks
     text = text.replace(/\uE000(\d+)\uE000/g, (_,i)=>`<pre><code>${esc(blocks[+i])}</code></pre>`);
     return text;
   }
@@ -155,7 +161,7 @@ Double Enter = new paragraph."></textarea>
   const edSave   = editor.querySelector('.save');
   let edColor='yellow', pendingRange=null, pendingAnchor=null;
 
-  // editor keyboard shortcuts
+  // editor shortcuts
   editor.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') { ev.preventDefault(); edCancel.click(); }
     if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); edSave.click(); }
@@ -245,16 +251,13 @@ Double Enter = new paragraph."></textarea>
     clearHideTimer();
     showPopoverFor(span);
   }, true);
-
   document.addEventListener('mouseout', (e) => {
     if (!e.target.closest('.uw-annot') || isPinned) return;
     clearHideTimer();
     hideTimer = setTimeout(maybeHide, 220);
   }, true);
-
   pop.addEventListener('mouseenter', clearHideTimer);
   pop.addEventListener('mouseleave', () => { if (!isPinned) maybeHide(); });
-
   popPin.addEventListener('click', () => {
     isPinned = !isPinned;
     popPin.classList.toggle('active', isPinned);
@@ -267,27 +270,20 @@ Double Enter = new paragraph."></textarea>
     e.stopPropagation();
     if (!popSpan) return;
     const rec = getRecForSpan(popSpan); if (!rec) return;
-
-    isPinned = false;
-    popPin.classList.remove('active');
-    hide(pop);
-
+    isPinned = false; popPin.classList.remove('active'); hide(pop);
     edText.value = rec.noteMd || '';
     edColor = rec.color || 'yellow';
     edDots.forEach(x => x.classList.toggle('active', x.dataset.c === edColor));
-
     const rect = popSpan.getBoundingClientRect();
     showAt(editor, rect.left + window.scrollX, rect.bottom + window.scrollY + 10);
     edText.focus();
-
     edSave.onclick = () => {
       const updated = updateByUid(rec.uid, r => ({...r, noteMd: edText.value || '', color: edColor}));
       if (updated){
         const span = document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`);
         if (span){ span.setAttribute('data-md', updated.noteMd); span.setAttribute('data-color', updated.color); }
       }
-      edSave.onclick = saveNew;
-      hide(editor);
+      edSave.onclick = saveNew; hide(editor);
     };
   });
 
@@ -302,7 +298,6 @@ Double Enter = new paragraph."></textarea>
       const a = spanAnchorFromDataset(popSpan);
       if (a) removed = deleteByAnchor(a);
     }
-    // unwrap
     const span = popSpan, parent = span.parentNode;
     while (span.firstChild) parent.insertBefore(span.firstChild, span);
     parent.removeChild(span);
