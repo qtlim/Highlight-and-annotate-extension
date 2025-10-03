@@ -1,14 +1,16 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — Click Bubble (XPath Anchors)
+// @name         Persistent Highlighter + Notes — Markdown, Colors, Per-Item Delete
 // @namespace    qt-highlighter
-// @version      2.0.0
-// @description  Select text → click bubble → add note. Hover shows note. Shift+click to edit/delete. Persists via XPath start/end anchors (with text fallback). Works in iframes.
+// @version      3.0.0
+// @description  Select text → Add → write Markdown → Save. Hover shows rendered note + mini toolbar (edit, color, delete). Persists (GM storage + XPath). Works in iframes & after re-renders.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
-// @grant        GM_addStyle
-// @grant        GM_registerMenuCommand
 // @run-at       document-end
 // @all-frames   true
+// @grant        GM_addStyle
+// @grant        GM_registerMenuCommand
+// @grant        GM_getValue
+// @grant        GM_setValue
 // ==/UserScript==
 
 (function () {
@@ -16,246 +18,371 @@
 
   if (location.href.startsWith('about:') || location.host.includes('addons.mozilla.org')) return;
 
+  // ---------- Styles ----------
   GM_addStyle(`
-    .uw-annot { background: rgba(255,230,0,.65); padding: 0 1px; border-bottom: 1px dotted rgba(0,0,0,.4); cursor: help; }
-    .uw-annot:hover { outline: 1px solid rgba(255,200,0,.9); }
-    .uw-bubble {
-      position: absolute; z-index: 2147483647; display: none;
-      background: #111; color: #fff; border-radius: 999px; padding: 6px 10px; font: 12px/1 -apple-system,Segoe UI,Roboto,sans-serif;
-      box-shadow: 0 4px 16px rgba(0,0,0,.25); user-select: none;
+    .uw-annot { padding:0 1px; border-radius:2px; cursor:help; }
+    .uw-annot[data-color="yellow"] { background: rgba(255,230,0,.65); }
+    .uw-annot[data-color="green"]  { background: rgba(160,255,160,.55); }
+    .uw-annot[data-color="blue"]   { background: rgba(160,200,255,.55); }
+    .uw-annot[data-color="pink"]   { background: rgba(255,160,220,.55); }
+    .uw-annot[data-color="orange"] { background: rgba(255,200,120,.55); }
+    .uw-annot:hover { outline: 1px solid rgba(30,30,30,.25); }
+
+    .uw-pill {
+      position:absolute; z-index:2147483647; display:none;
+      background:#111; color:#fff; border-radius:999px; padding:6px 10px;
+      font:12px/1 -apple-system,Segoe UI,Roboto,sans-serif; box-shadow:0 4px 16px rgba(0,0,0,.25);
+      user-select:none;
     }
-    .uw-bubble button { all: unset; cursor: pointer; background: #ffd400; color:#111; padding: 4px 8px; border-radius: 999px; font-weight: 700; margin-left: 8px; }
+    .uw-pill button { all:unset; cursor:pointer; background:#ffd400; color:#111; padding:4px 8px; border-radius:999px; font-weight:700; margin-left:8px; }
+
+    .uw-editor, .uw-pop {
+      position:absolute; z-index:2147483647; display:none; max-width:360px;
+      background:#1f1f1f; color:#eee; border:1px solid #333; border-radius:10px; padding:10px;
+      box-shadow:0 8px 28px rgba(0,0,0,.35);
+      font:13px/1.35 -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    .uw-editor textarea {
+      width:100%; min-height:120px; resize:vertical; box-sizing:border-box;
+      border:1px solid #444; background:#111; color:#eee; border-radius:6px; padding:8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .uw-row { display:flex; align-items:center; gap:8px; margin-top:8px; }
+    .uw-row .uw-spacer { flex:1; }
+    .uw-btn {
+      all:unset; cursor:pointer; background:#2b6; color:white; padding:6px 10px; border-radius:8px; font-weight:700;
+    }
+    .uw-btn.cancel { background:#666; }
+    .uw-color { width:18px; height:18px; border-radius:50%; border:2px solid #0003; cursor:pointer; }
+    .uw-color[data-c="yellow"] { background:#ffe600; }
+    .uw-color[data-c="green"]  { background:#80e680; }
+    .uw-color[data-c="blue"]   { background:#8abaff; }
+    .uw-color[data-c="pink"]   { background:#ff8ad2; }
+    .uw-color[data-c="orange"] { background:#ffc266; }
+    .uw-color.active { outline:2px solid #fff; }
+
+    .uw-pop .uw-toolbar { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+    .uw-pop .uw-tool { all:unset; cursor:pointer; background:#2a2a2a; color:#ddd; padding:4px 8px; border-radius:6px; font-size:12px; }
+    .uw-pop .uw-colors { display:flex; gap:6px; margin-left:auto; }
+    .uw-pop .uw-content { background:#151515; border:1px solid #333; border-radius:8px; padding:8px; max-height:320px; overflow:auto; }
+    .uw-pop .uw-content p { margin: 6px 0; }
+    .uw-pop .uw-content ul { margin:6px 0 6px 20px; }
+    .uw-pop .uw-content code { background:#000; padding:2px 4px; border-radius:4px; }
+    .uw-pop .uw-content pre { background:#000; padding:8px; border-radius:6px; overflow:auto; }
+    .uw-hidden { display:none !important; }
   `);
 
-  const KEY = () => 'uw_annots::' + location.origin + location.pathname;
-  const load = () => { try { return JSON.parse(localStorage.getItem(KEY())||'[]'); } catch { return []; } };
-  const save = arr => localStorage.setItem(KEY(), JSON.stringify(arr));
-
-  const PREFIX = 32, SUFFIX = 32;
-
-  const bubble = document.createElement('div');
-  bubble.className='uw-bubble';
-  bubble.innerHTML = `Annotate <button>Save</button>`;
-  document.documentElement.appendChild(bubble);
-  const btn = bubble.querySelector('button');
-
-  function showBubbleNearSelection(){
-    const sel=getSelection();
-    if(!sel || sel.rangeCount===0 || sel.isCollapsed){ bubble.style.display='none'; return; }
-    const r=sel.getRangeAt(0);
-    // ignore inputs/textarea/contenteditable
-    const el = (r.startContainer.nodeType===1 ? r.startContainer : r.startContainer.parentElement);
-    if (el && el.closest('input, textarea, [contenteditable="true"]')) { bubble.style.display='none'; return; }
-
-    const rect=r.getBoundingClientRect();
-    if(!rect || (!rect.width && !rect.height)){ bubble.style.display='none'; return; }
-    bubble.style.left = (rect.right + window.scrollX + 8) + 'px';
-    bubble.style.top  = (rect.top + window.scrollY - 8) + 'px';
-    bubble.style.display='block';
+  // ---------- Storage (GM, keyed by top-level URL) ----------
+  function topKey() {
+    try {
+      const u = new URL(window.top.location.href);
+      return `uw_annots::${u.origin}${u.pathname}`;
+    } catch {
+      const u = new URL(location.href);
+      return `uw_annots::${u.origin}${u.pathname}`;
+    }
   }
-  function hideBubble(){ bubble.style.display='none'; }
+  const load = () => { try { return JSON.parse(GM_getValue(topKey(), '[]')); } catch { return []; } };
+  const save = (arr) => GM_setValue(topKey(), JSON.stringify(arr));
 
-  document.addEventListener('selectionchange', showBubbleNearSelection);
-  document.addEventListener('mousedown', (e)=>{ if(!bubble.contains(e.target)) hideBubble(); }, true);
-  btn.addEventListener('click', (e)=>{ e.preventDefault(); e.stopPropagation(); addFromSelection(); });
+  // ---------- Small Markdown renderer (basic) ----------
+  function esc(s){ return s.replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m])); }
+  function mdToHtml(md){
+    if (!md) return '';
+    // code blocks
+    md = md.replace(/```([\s\S]*?)```/g, (_,code)=>`<pre><code>${esc(code)}</code></pre>`);
+    let html = esc(md);
+    // bold/italic/inline code
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    // headings
+    html = html.replace(/^###### (.+)$/gm,'<h6>$1</h6>')
+               .replace(/^##### (.+)$/gm,'<h5>$1</h5>')
+               .replace(/^#### (.+)$/gm,'<h4>$1</h4>')
+               .replace(/^### (.+)$/gm,'<h3>$1</h3>')
+               .replace(/^## (.+)$/gm,'<h2>$1</h2>')
+               .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
+    // unordered lists
+    const lines = html.split('\n');
+    let out = [], inList = false;
+    for (const line of lines){
+      if (/^\s*[-*]\s+/.test(line)) {
+        if (!inList){ out.push('<ul>'); inList = true; }
+        out.push('<li>' + line.replace(/^\s*[-*]\s+/, '') + '</li>');
+      } else {
+        if (inList){ out.push('</ul>'); inList = false; }
+        out.push(line);
+      }
+    }
+    if (inList) out.push('</ul>');
+    html = out.join('\n');
+    // paragraphs (double newline)
+    html = html.split(/\n{2,}/).map(p=>`<p>${p.replace(/\n/g,'<br>')}</p>`).join('');
+    return html;
+  }
 
-  // ===== XPath helpers =====
+  // ---------- UI elements ----------
+  const pill = el('div', 'uw-pill', `Annotate <button>Add</button>`);
+  document.documentElement.appendChild(pill);
+  const pillBtn = pill.querySelector('button');
+
+  const editor = el('div', 'uw-editor', `
+    <div style="margin-bottom:6px;font-weight:700;">Enter note (Markdown supported)</div>
+    <textarea placeholder="Type here...  \n\n**Bold**, *italic*, lists with - item, code with \`backticks\`."></textarea>
+    <div class="uw-row">
+      <span>Color:</span>
+      ${['yellow','green','blue','pink','orange'].map(c=>`<span class="uw-color" data-c="${c}" title="${c}"></span>`).join('')}
+      <span class="uw-spacer"></span>
+      <button class="uw-btn cancel">Cancel</button>
+      <button class="uw-btn save">Save</button>
+    </div>
+  `);
+  document.documentElement.appendChild(editor);
+  const edTextarea = editor.querySelector('textarea');
+  const edColors = [...editor.querySelectorAll('.uw-color')];
+  const edCancel = editor.querySelector('.cancel');
+  const edSave = editor.querySelector('.save');
+  let edColor = 'yellow', pendingRange = null, pendingAnchor = null;
+
+  const pop = el('div', 'uw-pop', `
+    <div class="uw-toolbar">
+      <button class="uw-tool uw-edit">✎ Edit</button>
+      <button class="uw-tool uw-del"  title="Delete">🗑 Delete</button>
+      <div class="uw-colors">
+        ${['yellow','green','blue','pink','orange'].map(c=>`<span class="uw-color" data-c="${c}" title="${c}"></span>`).join('')}
+      </div>
+    </div>
+    <div class="uw-content"></div>
+  `);
+  document.documentElement.appendChild(pop);
+  const popContent = pop.querySelector('.uw-content');
+  const popEdit = pop.querySelector('.uw-edit');
+  const popDel  = pop.querySelector('.uw-del');
+  const popColors = [...pop.querySelectorAll('.uw-color')];
+  let popTargetSpan = null;
+
+  // ---------- Selection pill ----------
+  document.addEventListener('selectionchange', () => {
+    const sel = getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return hide(pill);
+    const r = sel.getRangeAt(0);
+    const el = (r.startContainer.nodeType===1 ? r.startContainer : r.startContainer.parentElement);
+    if (el && el.closest('input, textarea, [contenteditable="true"]')) return hide(pill);
+    const rect = r.getBoundingClientRect();
+    if (!rect || (!rect.width && !rect.height)) return hide(pill);
+    showAt(pill, rect.right + window.scrollX + 8, rect.top + window.scrollY - 8);
+  });
+  document.addEventListener('mousedown', e => { if (!pill.contains(e.target) && !editor.contains(e.target) && !pop.contains(e.target)) hide(pill); }, true);
+  pillBtn.addEventListener('click', e => { e.preventDefault(); openEditorFromSelection(); });
+
+  // ---------- Editor ----------
+  edColors.forEach(swatch => {
+    swatch.addEventListener('click', () => {
+      edColor = swatch.dataset.c;
+      edColors.forEach(x=>x.classList.toggle('active', x===swatch));
+    });
+  });
+  edCancel.addEventListener('click', () => hide(editor));
+  edSave.addEventListener('click', () => saveFromEditor());
+
+  function openEditorFromSelection() {
+    const sel = getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const r = sel.getRangeAt(0);
+    if (r.collapsed) return;
+    // compute anchor
+    pendingRange = r.cloneRange();
+    pendingAnchor = rangeToAnchor(pendingRange);
+    edTextarea.value = '';
+    edColor = 'yellow';
+    edColors.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
+    const rect = r.getBoundingClientRect();
+    showAt(editor, rect.left + window.scrollX, rect.bottom + window.scrollY + 8);
+    edTextarea.focus();
+  }
+
+  function saveFromEditor() {
+    if (!pendingRange || !pendingAnchor) return hide(editor);
+    const raw = edTextarea.value || '';
+    const rec = {
+      noteMd: raw,
+      color: edColor,
+      ts: Date.now(),
+      startXPath: pendingAnchor.startXPath, startOffset: pendingAnchor.startOffset,
+      endXPath: pendingAnchor.endXPath,     endOffset: pendingAnchor.endOffset,
+      exact: pendingRange.toString(), prefix: getPrefix(pendingRange,48), suffix: getSuffix(pendingRange,48)
+    };
+    const arr = load(); arr.push(rec); save(arr);
+    wrap(pendingRange, rec);
+    hide(editor); hide(pill);
+    const sel = getSelection(); sel && sel.removeAllRanges();
+    pendingRange = pendingAnchor = null;
+  }
+
+  // ---------- Hover popover on highlights ----------
+  document.addEventListener('mouseover', e => {
+    const span = e.target.closest('.uw-annot');
+    if (!span) { if (!pop.contains(e.target)) hide(pop); return; }
+    popTargetSpan = span;
+    // toolbar color active
+    const color = span.getAttribute('data-color') || 'yellow';
+    popColors.forEach(c=>c.classList.toggle('active', c.dataset.c===color));
+    // render markdown
+    popContent.innerHTML = mdToHtml(span.getAttribute('data-md') || '');
+    const rect = span.getBoundingClientRect();
+    showAt(pop, rect.left + window.scrollX, rect.bottom + window.scrollY + 6);
+  }, true);
+
+  popEdit.addEventListener('click', () => {
+    if (!popTargetSpan) return;
+    // load into editor
+    edTextarea.value = popTargetSpan.getAttribute('data-md') || '';
+    edColor = popTargetSpan.getAttribute('data-color') || 'yellow';
+    edColors.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
+    // reconstruct a range from stored anchor in dataset-id
+    const rec = findRecordForSpan(popTargetSpan);
+    if (!rec) return;
+    pendingAnchor = { startXPath: rec.startXPath, startOffset: rec.startOffset, endXPath: rec.endXPath, endOffset: rec.endOffset };
+    const r = anchorToRange(pendingAnchor);
+    pendingRange = r || popTargetSpan.ownerDocument.createRange();
+    const rect = popTargetSpan.getBoundingClientRect();
+    showAt(editor, rect.left + window.scrollX, rect.bottom + window.scrollY + 8);
+    edTextarea.focus();
+    // On save, we UPDATE existing record instead of adding
+    edSave.onclick = () => {
+      const arr = load();
+      rec.noteMd = edTextarea.value || '';
+      rec.color = edColor;
+      save(arr);
+      // update DOM
+      popTargetSpan.setAttribute('data-md', rec.noteMd);
+      popTargetSpan.setAttribute('data-color', rec.color);
+      popTargetSpan.classList.remove('uw-annot'); // force class reflow
+      popTargetSpan.classList.add('uw-annot');
+      hide(editor); hide(pop);
+      // restore save handler
+      edSave.onclick = saveFromEditor;
+    };
+  });
+
+  popDel.addEventListener('click', () => {
+    if (!popTargetSpan) return;
+    // remove from DOM
+    const span = popTargetSpan;
+    const parent = span.parentNode;
+    while (span.firstChild) parent.insertBefore(span.firstChild, span);
+    parent.removeChild(span);
+    hide(pop);
+    // remove from storage
+    const rec = findRecordForSpan(span);
+    if (rec) {
+      const arr = load();
+      const idx = arr.indexOf(rec);
+      if (idx >= 0) { arr.splice(idx,1); save(arr); }
+    }
+  });
+
+  popColors.forEach(swatch => {
+    swatch.addEventListener('click', () => {
+      if (!popTargetSpan) return;
+      const c = swatch.dataset.c;
+      popColors.forEach(x=>x.classList.toggle('active', x===swatch));
+      popTargetSpan.setAttribute('data-color', c);
+      const rec = findRecordForSpan(popTargetSpan);
+      if (rec) { rec.color = c; save(load()); } // save current array (mutated rec)
+    });
+  });
+
+  // ---------- Helpers ----------
+  function el(tag, cls, html){ const d=document.createElement(tag); d.className=cls; d.innerHTML=html; return d; }
+  function showAt(node, x, y){ node.style.left = Math.round(x)+'px'; node.style.top = Math.round(y)+'px'; node.style.display='block'; }
+  function hide(node){ node.style.display='none'; }
+
+  function getPrefix(r, n){ try{ const rr=r.cloneRange(); rr.setStart(document.body,0); return rr.toString().slice(-n);}catch{return '';} }
+  function getSuffix(r, n){ try{ const rr=r.cloneRange(); rr.setEndAfter(document.body.lastChild||document.body); return rr.toString().slice(0,n);}catch{return '';} }
+
   function getXPath(node){
     if (!node) return null;
     const parts=[];
     while (node && node.nodeType !== Node.DOCUMENT_NODE) {
-      let idx=1, sib=node.previousSibling;
-      while (sib) { if (sib.nodeName === node.nodeName) idx++; sib=sib.previousSibling; }
-      parts.unshift(node.nodeType===Node.TEXT_NODE
-        ? `text()[${idx}]`
-        : `${node.nodeName.toLowerCase()}[${idx}]`);
+      let i=1, sib=node.previousSibling;
+      while (sib) { if (sib.nodeName === node.nodeName) i++; sib=sib.previousSibling; }
+      parts.unshift(node.nodeType===Node.TEXT_NODE ? `text()[${i}]` : `${node.nodeName.toLowerCase()}[${i}]`);
       node=node.parentNode;
     }
     return '/' + parts.join('/');
   }
-
   function resolveXPath(xpath){
-    try{
-      const res = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-      return res.singleNodeValue || null;
-    } catch { return null; }
+    try { return document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue || null; } catch { return null; }
   }
-
-  function rangeToAnchor(range){
+  function rangeToAnchor(r){
     return {
-      startXPath: getXPath(range.startContainer),
-      startOffset: range.startOffset,
-      endXPath: getXPath(range.endContainer),
-      endOffset: range.endOffset
+      startXPath: getXPath(r.startContainer), startOffset: r.startOffset,
+      endXPath:   getXPath(r.endContainer),   endOffset:   r.endOffset
     };
   }
-
-  function anchorToRange(anchor){
-    const sc = resolveXPath(anchor.startXPath);
-    const ec = resolveXPath(anchor.endXPath);
+  function anchorToRange(a){
+    const sc = resolveXPath(a.startXPath), ec = resolveXPath(a.endXPath);
     if (!sc || !ec) return null;
     try {
       const r = document.createRange();
-      r.setStart(sc, Math.min(anchor.startOffset, (sc.nodeValue||'').length));
-      r.setEnd(ec, Math.min(anchor.endOffset, (ec.nodeValue||'').length));
-      if (!r.collapsed) return r;
-    } catch {}
-    return null;
+      r.setStart(sc, Math.min(a.startOffset, (sc.nodeValue||'').length));
+      r.setEnd(ec, Math.min(a.endOffset, (ec.nodeValue||'').length));
+      return r.collapsed ? null : r;
+    } catch { return null; }
   }
 
-  // ===== Text-context fallback =====
-  function norm(s){ return s.replace(/\s+/g,' ').trim(); }
-  function selectionInfo(){
-    const sel=getSelection();
-    if(!sel || sel.rangeCount===0) return null;
-    const r=sel.getRangeAt(0);
-    if(r.collapsed) return null;
-    const el = (r.startContainer.nodeType===1 ? r.startContainer : r.startContainer.parentElement);
-    if (el && el.closest('input, textarea, [contenteditable="true"]')) return null;
-    const exact = norm(r.toString());
-    if(!exact) return null;
-
-    const pre = (()=>{ try{ const rr=r.cloneRange(); rr.setStart(document.body,0); return norm(rr.toString()).slice(-PREFIX);}catch{return '';} })();
-    const suf = (()=>{ try{ const rr=r.cloneRange(); rr.setEndAfter(document.body.lastChild||document.body); return norm(rr.toString()).slice(0,SUFFIX);}catch{return '';} })();
-
-    return { range:r, exact, prefix:pre, suffix:suf };
-  }
-
-  function findAll(exact){
-    const out=[]; const w=document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-      acceptNode(n){ if(!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-        const p=n.parentElement; if(!p) return NodeFilter.FILTER_ACCEPT;
-        const t=p.tagName; if(t==='SCRIPT'||t==='STYLE'||t==='NOSCRIPT') return NodeFilter.FILTER_REJECT;
-        return NodeFilter.FILTER_ACCEPT; }
-    });
-    for(let n=w.nextNode(); n; n=w.nextNode()){
-      const txt = norm(n.nodeValue);
-      let idx=0;
-      while(idx <= txt.length){
-        const i = txt.indexOf(exact, idx);
-        if(i === -1) break;
-        // Map back to original node offset by expanding with raw text
-        // (approximate: search in raw for the exact with collapsed spaces)
-        const raw = n.nodeValue;
-        const rawIdx = raw.toLowerCase().indexOf(exact.toLowerCase().replace(/ /g, ' ')); // rough map
-        if (rawIdx !== -1) out.push({ node:n, start:rawIdx });
-        idx = i + exact.length;
-      }
-    }
-    return out;
-  }
-  function ctxBefore(node, off, len){ let acc='', cur=node, o=off;
-    while(acc.length<len && cur){ if(cur.nodeType===3){ acc=(cur.nodeValue.slice(0,o)+acc).slice(-len); }
-      cur=prevText(cur); o=cur?cur.nodeValue.length:0; } return norm(acc).slice(-len); }
-  function ctxAfter(node, off, len){ let acc='', cur=node, o=off;
-    while(acc.length<len && cur){ if(cur.nodeType===3){ acc=(acc+cur.nodeValue.slice(o)).slice(0,len); }
-      cur=nextText(cur); o=0; } return norm(acc).slice(0,len); }
-  function prevText(n){ let x=n; while(x && !x.previousSibling) x=x.parentNode; if(!x) return null; x=x.previousSibling; while(x&&x.lastChild) x=x.lastChild; return x&&x.nodeType===3?x:null; }
-  function nextText(n){ let x=n; while(x && !x.nextSibling) x=x.parentNode; if(!x) return null; x=x.nextSibling; while(x&&x.firstChild) x=x.firstChild; return x&&x.nodeType===3?x:null; }
-
-  function findRangeByText(exact, prefix, suffix){
-    const matches = findAll(exact);
-    for (const m of matches) {
-      const preOK = prefix ? ctxBefore(m.node, m.start, PREFIX).endsWith(prefix) : true;
-      const sufOK = suffix ? ctxAfter(m.node, m.start + exact.length, SUFFIX).startsWith(suffix) : true;
-      if (preOK && sufOK) {
-        const r = document.createRange();
-        r.setStart(m.node, m.start);
-        r.setEnd(m.node, m.start + exact.length);
-        return r;
-      }
-    }
-    return null;
-  }
-
-  // ===== Wrap & store =====
-  function wrap(range, note){
-    const span=document.createElement('span');
-    span.className='uw-annot';
-    span.setAttribute('data-note', note||'');
-    span.title = note||'';
+  function wrap(range, rec){
+    const span = document.createElement('span');
+    span.className = 'uw-annot';
+    span.setAttribute('data-md', rec.noteMd || '');
+    span.setAttribute('data-color', rec.color || 'yellow');
+    // a soft id so we can find the record later
+    span.setAttribute('data-exact', (range.toString()||'').slice(0,120));
     range.surroundContents(span);
-
-    span.addEventListener('click', (e)=>{
-      if(!e.shiftKey) return;
-      e.preventDefault(); e.stopPropagation();
-      const updated = prompt('Edit note (leave empty to delete):', span.getAttribute('data-note')||'');
-      if(updated===null) return;
-      if(updated===''){ // delete
-        const p=span.parentNode;
-        while(span.firstChild) p.insertBefore(span.firstChild, span);
-        p.removeChild(span);
-        removeFromStore(span);
-      } else {
-        span.setAttribute('data-note', updated);
-        span.title = updated;
-        updateInStore(span, updated);
-      }
-    }, {capture:true});
   }
 
-  function addFromSelection(){
-    const info = selectionInfo();
-    if(!info){ alert('Select normal page text first (not PDF/inputs).'); return; }
-    const note = prompt('Enter note for this highlight:');
-    if(note===null) return;
-
-    const anchor = rangeToAnchor(info.range);
-    const rec = {
-      note: note||'',
-      ts: Date.now(),
-      // primary anchor
-      startXPath: anchor.startXPath,
-      startOffset: anchor.startOffset,
-      endXPath: anchor.endXPath,
-      endOffset: anchor.endOffset,
-      // fallback
-      exact: info.exact,
-      prefix: info.prefix,
-      suffix: info.suffix
-    };
-
-    const arr = load(); arr.push(rec); save(arr);
-    wrap(info.range, rec.note);
-    const sel=getSelection(); sel && sel.removeAllRanges();
-    hideBubble();
+  function findRecordForSpan(span){
+    const exact = span.getAttribute('data-exact') || span.textContent || '';
+    const md = span.getAttribute('data-md') || '';
+    const color = span.getAttribute('data-color') || 'yellow';
+    const arr = load();
+    // heuristics to match (xpath match is expensive here; use text+md+color)
+    return arr.find(r => (r.exact||'').startsWith(exact.slice(0,40)) && (r.noteMd||'')===md && (r.color||'yellow')===color)
+        || arr.find(r => (r.noteMd||'')===md && (r.color||'yellow')===color);
   }
 
+  // ---------- Hydration & SPA support ----------
   function hydrate(){
-    for(const a of load()){
-      let r = anchorToRange(a);
-      if (!r && a.exact) r = findRangeByText(a.exact, a.prefix, a.suffix);
-      if (r){ try{ wrap(r, a.note); }catch{} }
+    const arr = load();
+    for (const r of arr) {
+      let range = anchorToRange(r);
+      if (!range && r.exact) { // very rough fallback
+        const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let n; while(n = w.nextNode()){
+          const i = (n.nodeValue||'').indexOf(r.exact);
+          if (i >= 0){ const rng = document.createRange(); rng.setStart(n, i); rng.setEnd(n, i + r.exact.length); range = rng; break; }
+        }
+      }
+      if (range) { try { wrap(range, r); } catch {} }
     }
   }
 
-  function removeFromStore(span){
-    const exact=span.textContent||''; const note=span.getAttribute('data-note')||'';
-    const arr=load();
-    // try exact+note match first
-    let i = arr.findIndex(x => (x.exact||'')===exact && (x.note||'')===note);
-    if (i<0) i = arr.findIndex(x => (x.note||'')===note); // fallback
-    if(i>=0){ arr.splice(i,1); save(arr); }
-  }
+  const mo = new MutationObserver(() => { clearTimeout(mo._t); mo._t = setTimeout(hydrate, 400); });
+  mo.observe(document.documentElement, { childList:true, subtree:true });
 
-  function updateInStore(span, newNote){
-    const exact=span.textContent||''; const old=span.getAttribute('data-note')||'';
-    const arr=load();
-    let rec = arr.find(x => (x.exact||'')===exact && (x.note||'')===old) || arr.find(x => (x.exact||'')===exact);
-    if(rec){ rec.note=newNote; save(arr); }
-  }
-
+  // ---------- Menu helpers ----------
   if (typeof GM_registerMenuCommand === 'function') {
-    GM_registerMenuCommand('Add highlight from selection', addFromSelection);
-    GM_registerMenuCommand('List annotations', () => {
+    GM_registerMenuCommand('Add highlight from selection', ()=>openEditorFromSelection());
+    GM_registerMenuCommand('List annotations', ()=>{
       const arr = load();
-      if (!arr.length) return alert('No annotations on this page.');
-      const lines = arr.sort((a,b)=>a.ts-b.ts).map((a,i)=>`${i+1}. "${a.exact||'(xpath)'}"\n   → ${a.note||'(no note)'}\n`);
-      alert(`Annotations for this page:\n\n${lines.join('\n')}`);
+      if (!arr.length) return alert('No annotations for this page.');
+      alert(arr.map((r,i)=>`${i+1}. ${r.exact?.slice(0,50)||'(xpath)'}  [${r.color}]`).join('\n'));
     });
   }
 
-  // Boot
+  // ---------- Boot ----------
   hydrate();
-  setTimeout(hydrate, 1200);
+  setTimeout(hydrate, 1000);
 })();
