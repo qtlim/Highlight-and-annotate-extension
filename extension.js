@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v3.7 (Tight List Spacing, Solid Edit/Delete, Light UI)
+// @name         Persistent Highlighter + Notes — v3.9 (Custom Colors + Unified Text Size)
 // @namespace    qt-highlighter
-// @version      3.7.0
-// @description  Select text → Add → Markdown note. Hover shows popover (edit, delete, pin, color). Robust persistence (GM storage + XPath), no duplicate wrapping, works in iframes & SPA rerenders.
+// @version      3.9.0
+// @description  Select text → Add → Markdown note. Hover shows popover (edit, delete, pin, color incl. picker). Robust persistence (GM storage + XPath), no duplicate wrapping, SPA-safe.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
 // @run-at       document-end
@@ -17,7 +17,7 @@
   'use strict';
   if (location.href.startsWith('about:') || location.host.includes('addons.mozilla.org')) return;
 
-  // ---------- LIGHT THEME + spacing tweaks ----------
+  // ---------- LIGHT THEME + spacing + unified font ----------
   GM_addStyle(`
     .uw-annot { padding:0 1px; border-radius:2px; cursor:help; }
     .uw-annot[data-color="yellow"] { background: rgba(255,230,0,.65); }
@@ -29,16 +29,16 @@
 
     .uw-pill {
       position:absolute; z-index:2147483647; display:none;
-      background:#ffffff; color:#111; border:1px solid #ddd; border-radius:999px; padding:6px 10px;
+      background:#fff; color:#111; border:1px solid #ddd; border-radius:999px; padding:6px 10px;
       font:12px/1 -apple-system,Segoe UI,Roboto,sans-serif; box-shadow:0 4px 16px rgba(0,0,0,.1); user-select:none;
     }
     .uw-pill button { all:unset; cursor:pointer; background:#ffd400; color:#111; padding:4px 8px; border-radius:999px; font-weight:700; margin-left:8px; }
 
     .uw-editor, .uw-pop {
       position:absolute; z-index:2147483647; display:none; max-width:380px;
-      background:#ffffff; color:#222; border:1px solid #ddd; border-radius:10px; padding:10px;
+      background:#fff; color:#222; border:1px solid #ddd; border-radius:10px; padding:10px;
       box-shadow:0 10px 28px rgba(0,0,0,.12);
-      font:13px/1.38 -apple-system, Segoe UI, Roboto, sans-serif;
+      font:14px/1.45 -apple-system, Segoe UI, Roboto, sans-serif; /* unified base size */
     }
     .uw-editor textarea {
       width:100%; min-height:120px; resize:vertical; box-sizing:border-box;
@@ -49,6 +49,7 @@
     .uw-row .uw-spacer { flex:1; }
     .uw-btn { all:unset; cursor:pointer; background:#2b6; color:#fff; padding:6px 10px; border-radius:8px; font-weight:700; }
     .uw-btn.cancel { background:#888; }
+
     .uw-color { width:18px; height:18px; border-radius:50%; border:2px solid #0002; cursor:pointer; }
     .uw-color[data-c="yellow"] { background:#ffe600; }
     .uw-color[data-c="green"]  { background:#80e680; }
@@ -62,13 +63,15 @@
     .uw-pop .uw-pin { all:unset; cursor:pointer; background:#f2f2f2; color:#333; padding:4px 8px; border-radius:6px; font-size:12px; border:1px solid #e1e1e1; }
     .uw-pop .uw-pin.active { background:#ffd400; color:#111; border-color:#e6c600; }
     .uw-pop .uw-close { margin-left:4px; }
-    .uw-pop .uw-colors { display:flex; gap:6px; margin-left:auto; }
-    .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:340px; overflow:auto; color:#222; }
+    .uw-pop .uw-colors { display:flex; gap:6px; margin-left:auto; align-items:center; }
+    .uw-pop input.uw-picker { width:22px; height:22px; border:none; padding:0; background:transparent; cursor:pointer; }
 
-    /* Spacing INSIDE rendered notes */
+    .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:340px; overflow:auto; color:#222; }
+    /* inside markdown: same font size for p & li */
+    .uw-pop .uw-content, .uw-pop .uw-content p, .uw-pop .uw-content li { font-size:14px; line-height:1.45; }
     .uw-pop .uw-content p { margin: 10px 0; }           /* paragraph separation */
-    .uw-pop .uw-content ul { margin: 4px 0; padding-left: 18px; }  /* small margin above/below lists */
-    .uw-pop .uw-content ul li { margin: 0; }             /* no extra space between bullets */
+    .uw-pop .uw-content ul { margin: 4px 0; padding-left: 18px; } /* small gap above/below lists */
+    .uw-pop .uw-content ul li { margin: 0; }            /* tight bullets */
     .uw-pop .uw-content code { background:#f6f6f6; padding:2px 4px; border-radius:4px; }
     .uw-pop .uw-content pre { background:#f6f6f6; padding:8px; border-radius:6px; overflow:auto; }
   `);
@@ -84,17 +87,14 @@
   function deleteByUid(uid){ const arr=load(); const i=arr.findIndex(r=>r.uid===uid); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
   function deleteByAnchor(a){ const arr=load(); const i=arr.findIndex(r=>r.startXPath===a.startXPath&&r.startOffset===a.startOffset&&r.endXPath===a.endXPath&&r.endOffset===a.endOffset); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
 
-  // ---------- Markdown (NO <p> wrappers around lists) ----------
+  // ---------- Markdown (tight lists; no <p> around lists) ----------
   function esc(s){ return s.replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m])); }
   function mdToHtml(md){
     if (!md) return '';
-    // capture fenced code blocks
     const blocks = [];
     md = md.replace(/```([\s\S]*?)```/g, (_,code)=>{ blocks.push(code); return `\uE000${blocks.length-1}\uE000`; });
-
     let text = esc(md);
 
-    // headings
     text = text.replace(/^###### (.+)$/gm,'<h6>$1</h6>')
                .replace(/^##### (.+)$/gm,'<h5>$1</h5>')
                .replace(/^#### (.+)$/gm,'<h4>$1</h4>')
@@ -102,7 +102,6 @@
                .replace(/^## (.+)$/gm,'<h2>$1</h2>')
                .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
 
-    // Build lists first
     const lines = text.split('\n'); let out=[], inList=false;
     for (const line of lines){
       if (/^\s*[-*]\s+/.test(line)) {
@@ -116,7 +115,6 @@
     if (inList) out.push('</ul>');
     text = out.join('\n');
 
-    // Paragraphs: wrap ONLY plain-text blocks; leave UL/HEADINGS/PRE as-is
     const blocks2 = text.split(/\n{2,}/).map(b => b.trim());
     const htmlBlocks = blocks2.map(b => {
       if (!b) return '';
@@ -125,12 +123,9 @@
     });
     text = htmlBlocks.join('');
 
-    // inline formatting
     text = text.replace(/`([^`]+)`/g, '<code>$1</code>')
                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>'); // italic (not list markers)
-
-    // restore fenced code blocks
+               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>');
     text = text.replace(/\uE000(\d+)\uE000/g, (_,i)=>`<pre><code>${esc(blocks[+i])}</code></pre>`);
     return text;
   }
@@ -150,6 +145,7 @@ Double Enter = new paragraph."></textarea>
     <div class="uw-row">
       <span>Color:</span>
       ${colors().map(c=>dot(c)).join('')}
+      <input class="uw-picker" type="color" title="Custom color" value="#ffe600">
       <span class="uw-spacer"></span>
       <button class="uw-btn cancel">Cancel</button>
       <button class="uw-btn save">Save</button>
@@ -157,11 +153,11 @@ Double Enter = new paragraph."></textarea>
   `); document.documentElement.appendChild(editor);
   const edText = editor.querySelector('textarea');
   const edDots = [...editor.querySelectorAll('.uw-color')];
+  const edPicker = editor.querySelector('.uw-picker');
   const edCancel = editor.querySelector('.cancel');
   const edSave   = editor.querySelector('.save');
-  let edColor='yellow', pendingRange=null, pendingAnchor=null;
+  let edColor='yellow', edHex=null, pendingRange=null, pendingAnchor=null;
 
-  // editor shortcuts
   editor.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') { ev.preventDefault(); edCancel.click(); }
     if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); edSave.click(); }
@@ -173,7 +169,10 @@ Double Enter = new paragraph."></textarea>
       <button class="uw-tool uw-del">🗑 Delete</button>
       <button class="uw-pin" title="Pin/unpin">📌 Pin</button>
       <button class="uw-tool uw-close" title="Close">✖</button>
-      <div class="uw-colors">${colors().map(c=>dot(c)).join('')}</div>
+      <div class="uw-colors">
+        ${colors().map(c=>dot(c)).join('')}
+        <input class="uw-picker" type="color" title="Custom color">
+      </div>
     </div>
     <div class="uw-content"></div>
   `); document.documentElement.appendChild(pop);
@@ -182,6 +181,7 @@ Double Enter = new paragraph."></textarea>
   const popDel  = pop.querySelector('.uw-del');
   const popClose= pop.querySelector('.uw-close');
   const popDots = [...pop.querySelectorAll('.uw-color')];
+  const popPicker = pop.querySelector('.uw-picker');
   const popPin  = pop.querySelector('.uw-pin');
   let popSpan = null, isPinned = false, hideTimer = null;
 
@@ -200,7 +200,14 @@ Double Enter = new paragraph."></textarea>
   pillBtn.addEventListener('click', e => { e.preventDefault(); openEditorFromSelection(); });
 
   // ---------- Editor actions ----------
-  edDots.forEach(s=>s.addEventListener('click',()=>{ edColor=s.dataset.c; edDots.forEach(x=>x.classList.toggle('active', x===s)); }));
+  edDots.forEach(s=>s.addEventListener('click',()=>{
+    edColor=s.dataset.c; edHex=null;
+    edDots.forEach(x=>x.classList.toggle('active', x===s));
+  }));
+  edPicker.addEventListener('input', ()=>{
+    edHex = edPicker.value; edColor='custom';
+    edDots.forEach(x=>x.classList.remove('active'));
+  });
   edCancel.addEventListener('click', ()=>{ hide(editor); });
   edSave.onclick = saveNew;
 
@@ -209,16 +216,19 @@ Double Enter = new paragraph."></textarea>
     const r=sel.getRangeAt(0); if (r.collapsed) return;
     pendingRange = r.cloneRange();
     pendingAnchor = rangeToAnchor(pendingRange);
-    edText.value=''; edColor='yellow'; edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
+    edText.value='';
+    edColor='yellow'; edHex=null; edPicker.value='#ffe600';
+    edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
     const rc=r.getBoundingClientRect(); showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+10); edText.focus();
   }
 
   function saveNew(){
     if (!pendingRange || !pendingAnchor) return hide(editor);
+    const colorVal = edHex ? edHex : edColor; // store hex if custom
     const rec = {
       uid: uid(),
       noteMd: edText.value || '',
-      color: edColor, ts: Date.now(),
+      color: colorVal, ts: Date.now(),
       startXPath: pendingAnchor.startXPath, startOffset: pendingAnchor.startOffset,
       endXPath: pendingAnchor.endXPath,     endOffset: pendingAnchor.endOffset,
       exact: pendingRange.toString()
@@ -233,8 +243,11 @@ Double Enter = new paragraph."></textarea>
   // ---------- Popover (sticky + pin) ----------
   function showPopoverFor(span){
     popSpan = span;
-    const color = span.getAttribute('data-color') || 'yellow';
-    popDots.forEach(c=>c.classList.toggle('active', c.dataset.c===color));
+    // reflect current color into controls
+    const cur = span.getAttribute('data-color');
+    const hex = span.getAttribute('data-hex');
+    popDots.forEach(c=>c.classList.toggle('active', c.dataset.c===cur));
+    if (hex) popPicker.value = hex; else popPicker.value = guessHexFromName(cur);
     popContent.innerHTML = mdToHtml(span.getAttribute('data-md') || '');
     const rect = span.getBoundingClientRect();
     showAt(pop, rect.left + window.scrollX, rect.bottom + window.scrollY + 6);
@@ -271,17 +284,22 @@ Double Enter = new paragraph."></textarea>
     if (!popSpan) return;
     const rec = getRecForSpan(popSpan); if (!rec) return;
     isPinned = false; popPin.classList.remove('active'); hide(pop);
+
     edText.value = rec.noteMd || '';
-    edColor = rec.color || 'yellow';
+    if (rec.color && rec.color.startsWith('#')) { edHex = rec.color; edColor='custom'; edPicker.value=rec.color; }
+    else { edHex=null; edColor=rec.color||'yellow'; edPicker.value=guessHexFromName(edColor); }
     edDots.forEach(x => x.classList.toggle('active', x.dataset.c === edColor));
+
     const rect = popSpan.getBoundingClientRect();
     showAt(editor, rect.left + window.scrollX, rect.bottom + window.scrollY + 10);
     edText.focus();
+
     edSave.onclick = () => {
-      const updated = updateByUid(rec.uid, r => ({...r, noteMd: edText.value || '', color: edColor}));
+      const newColor = edHex ? edHex : edColor;
+      const updated = updateByUid(rec.uid, r => ({...r, noteMd: edText.value || '', color: newColor}));
       if (updated){
         const span = document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`);
-        if (span){ span.setAttribute('data-md', updated.noteMd); span.setAttribute('data-color', updated.color); }
+        if (span){ applyColor(span, updated.color); span.setAttribute('data-md', updated.noteMd); }
       }
       edSave.onclick = saveNew; hide(editor);
     };
@@ -305,15 +323,26 @@ Double Enter = new paragraph."></textarea>
     setTimeout(hydrateOnce, 20);
   });
 
-  // Color change (live + persistent)
+  // Color swatches in popover
   popDots.forEach(s=>s.addEventListener('click',(e)=>{
     e.stopPropagation();
     if (!popSpan) return;
-    const c = s.dataset.c; popDots.forEach(x=>x.classList.toggle('active', x===s));
-    popSpan.setAttribute('data-color', c);
+    const c = s.dataset.c;
+    popDots.forEach(x=>x.classList.toggle('active', x===s));
+    applyColor(popSpan, c);
     const rec = getRecForSpan(popSpan);
     if (rec) updateByUid(rec.uid, r => ({...r, color:c}));
   }));
+
+  // Color picker in popover — saves custom hex
+  popPicker.addEventListener('input', (e)=>{
+    if (!popSpan) return;
+    const hex = e.target.value;
+    applyColor(popSpan, hex);
+    popDots.forEach(x=>x.classList.remove('active'));
+    const rec = getRecForSpan(popSpan);
+    if (rec) updateByUid(rec.uid, r => ({...r, color:hex}));
+  });
 
   // ---------- DOM/anchor helpers ----------
   function div(cls, html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
@@ -370,12 +399,11 @@ Double Enter = new paragraph."></textarea>
     span.className = 'uw-annot';
     span.setAttribute('data-uid', rec.uid);
     span.setAttribute('data-md',  rec.noteMd || '');
-    span.setAttribute('data-color', rec.color || 'yellow');
     span.setAttribute('data-sx', rec.startXPath);
     span.setAttribute('data-so', rec.startOffset);
     span.setAttribute('data-ex', rec.endXPath);
     span.setAttribute('data-eo', rec.endOffset);
-
+    applyColor(span, rec.color || 'yellow');
     try { range.surroundContents(span); }
     catch {
       const tmp = document.createElement('span');
@@ -383,6 +411,35 @@ Double Enter = new paragraph."></textarea>
       span.appendChild(tmp);
       range.deleteContents();
       range.insertNode(span);
+    }
+  }
+
+  function applyColor(span, color){
+    // color can be a named swatch (yellow/green/blue/pink/orange) or a hex like "#ffcc00"
+    if (color && color.startsWith && color.startsWith('#')){
+      span.setAttribute('data-color', 'custom');
+      span.setAttribute('data-hex', color);
+      span.style.background = hexToRgba(color, 0.6);
+    } else {
+      span.setAttribute('data-color', color || 'yellow');
+      span.removeAttribute('data-hex');
+      span.style.background = ''; // let CSS handle named colors
+    }
+  }
+  function hexToRgba(hex, a){
+    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    if (!m) return hex;
+    const r = parseInt(m[1],16), g = parseInt(m[2],16), b = parseInt(m[3],16);
+    return `rgba(${r},${g},${b},${a==null?0.6:a})`;
+  }
+  function guessHexFromName(name){
+    switch(name){
+      case 'yellow': return '#ffe600';
+      case 'green':  return '#80e680';
+      case 'blue':   return '#8abaff';
+      case 'pink':   return '#ff8ad2';
+      case 'orange': return '#ffc266';
+      default: return '#ffe600';
     }
   }
 
@@ -421,7 +478,8 @@ Double Enter = new paragraph."></textarea>
       const sel=getSelection(); if (!sel || sel.rangeCount===0) return;
       const r=sel.getRangeAt(0); if (r.collapsed) return;
       pendingRange = r.cloneRange(); pendingAnchor = rangeToAnchor(pendingRange);
-      edText.value=''; edColor='yellow'; edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
+      edText.value=''; edColor='yellow'; edHex=null; edPicker.value='#ffe600';
+      edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
       const rc=r.getBoundingClientRect(); showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+10); edText.focus();
     });
     GM_registerMenuCommand('List annotations', ()=>{
