@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — Stable, Light UI, Pin, Edit/Delete fixed
+// @name         Persistent Highlighter + Notes — Solid Edit/Delete, Light UI, Pin
 // @namespace    qt-highlighter
-// @version      3.3.0
-// @description  Select text → Add → Markdown note. Hover shows popover (pin/close, edit, delete, color). Robust persistence (GM storage + XPath), no duplicate wrapping, works in iframes & SPA rerenders.
+// @version      3.4.0
+// @description  Select text → Add → Markdown note. Hover shows popover (pin/close, edit, delete, color). Robust persistence (GM storage + XPath), UID+anchor tagging, no duplicate wrapping, works in iframes & SPA rerenders.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
 // @run-at       document-end
@@ -77,6 +77,7 @@
   }
   const load = () => { try { return JSON.parse(GM_getValue(pageKey(), '[]')); } catch { return []; } };
   const save = (arr) => GM_setValue(pageKey(), JSON.stringify(arr));
+
   function updateByUid(uid, fn){
     const arr = load();
     const i = arr.findIndex(r => r.uid === uid);
@@ -86,6 +87,15 @@
   function deleteByUid(uid){
     const arr = load();
     const i = arr.findIndex(r => r.uid === uid);
+    if (i >= 0) { arr.splice(i,1); save(arr); return true; }
+    return false;
+  }
+  function deleteByAnchor(a){
+    const arr = load();
+    const i = arr.findIndex(r =>
+      r.startXPath === a.startXPath && r.startOffset === a.startOffset &&
+      r.endXPath   === a.endXPath   && r.endOffset   === a.endOffset
+    );
     if (i >= 0) { arr.splice(i,1); save(arr); return true; }
     return false;
   }
@@ -248,6 +258,7 @@ Double Enter = new paragraph."></textarea>
 
   pop.addEventListener('mouseenter', clearHideTimer);
   pop.addEventListener('mouseleave', () => { if (!isPinned) maybeHide(); });
+
   popPin.addEventListener('click', () => {
     isPinned = !isPinned;
     popPin.classList.toggle('active', isPinned);
@@ -255,11 +266,11 @@ Double Enter = new paragraph."></textarea>
   });
   popClose.addEventListener('click', () => { isPinned=false; popPin.classList.remove('active'); hide(pop); });
 
-  // Edit
+  // Edit (UID first, then anchor fallback)
   popEdit.addEventListener('click', () => {
     if (!popSpan) return;
-    const uidVal = popSpan.getAttribute('data-uid');
-    const rec = load().find(r => r.uid === uidVal); if (!rec) return;
+    const rec = getRecForSpan(popSpan);
+    if (!rec) return;
     edText.value = rec.noteMd || '';
     edColor = rec.color || 'yellow';
     edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
@@ -269,28 +280,31 @@ Double Enter = new paragraph."></textarea>
     edSave.onclick = ()=>saveEdit(rec);
   });
 
-  // Delete
+  // Delete (UID first, then anchor fallback; remove from storage BEFORE DOM)
   popDel.addEventListener('click', () => {
     if (!popSpan) return;
     const uidVal = popSpan.getAttribute('data-uid');
-    // 1) remove from storage FIRST so hydrator won't bring it back
-    const ok = deleteByUid(uidVal);
-    // 2) remove DOM
+    let removed = false;
+    if (uidVal) removed = deleteByUid(uidVal);
+    if (!removed) {
+      const a = spanAnchorFromDataset(popSpan);
+      if (a) removed = deleteByAnchor(a);
+    }
+    // unwrap DOM regardless
     const span = popSpan, parent = span.parentNode;
     while (span.firstChild) parent.insertBefore(span.firstChild, span);
     parent.removeChild(span);
     hide(pop);
-    // 3) safety: delay a rehydrate pass to re-apply others only
-    setTimeout(hydrateOnce, 10);
+    setTimeout(hydrateOnce, 20); // reapply others only
   });
 
-  // Color change (live + persistent)
+  // Color change (live + persistent with fallbacks)
   popDots.forEach(s=>s.addEventListener('click',()=>{
     if (!popSpan) return;
     const c = s.dataset.c; popDots.forEach(x=>x.classList.toggle('active', x===s));
     popSpan.setAttribute('data-color', c);
-    const uidVal = popSpan.getAttribute('data-uid');
-    updateByUid(uidVal, r => ({...r, color: c}));
+    const rec = getRecForSpan(popSpan);
+    if (rec) updateByUid(rec.uid, r => ({...r, color:c}));
   }));
 
   // ---------- DOM helpers ----------
@@ -332,6 +346,13 @@ Double Enter = new paragraph."></textarea>
     } catch { return null; }
   }
 
+  function spanAnchorFromDataset(span){
+    const sx = span.getAttribute('data-sx'), so = span.getAttribute('data-so'),
+          ex = span.getAttribute('data-ex'), eo = span.getAttribute('data-eo');
+    if (!sx || !ex || so==null || eo==null) return null;
+    return { startXPath:sx, startOffset:+so, endXPath:ex, endOffset:+eo };
+  }
+
   function wrapRange(range, rec){
     // skip if this UID already exists
     if (document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`)) return;
@@ -346,6 +367,12 @@ Double Enter = new paragraph."></textarea>
     span.setAttribute('data-uid', rec.uid);
     span.setAttribute('data-md',  rec.noteMd || '');
     span.setAttribute('data-color', rec.color || 'yellow');
+    // also tag anchors so edit/delete have a fallback
+    span.setAttribute('data-sx', rec.startXPath);
+    span.setAttribute('data-so', rec.startOffset);
+    span.setAttribute('data-ex', rec.endXPath);
+    span.setAttribute('data-eo', rec.endOffset);
+
     try { range.surroundContents(span); }
     catch {
       const tmp = document.createElement('span');
@@ -356,28 +383,29 @@ Double Enter = new paragraph."></textarea>
     }
   }
 
+  function getRecForSpan(span){
+    const uidVal = span.getAttribute('data-uid');
+    if (uidVal){
+      const r = load().find(x => x.uid === uidVal);
+      if (r) return r;
+    }
+    const a = spanAnchorFromDataset(span);
+    if (a){
+      const r = load().find(x =>
+        x.startXPath===a.startXPath && x.startOffset===a.startOffset &&
+        x.endXPath===a.endXPath && x.endOffset===a.endOffset
+      );
+      if (r) return r;
+    }
+    return null;
+  }
+
   // ---------- Hydration (no duplicates) ----------
   function hydrateOnce(){
     const arr = load();
     for (const r of arr) {
       if (document.querySelector(`.uw-annot[data-uid="${r.uid}"]`)) continue;
       let range = anchorToRange(r);
-      if (!range && r.exact) {
-        // fallback text search (skip inside existing .uw-annot)
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-          acceptNode(n){
-            if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-            if (n.parentElement && n.parentElement.closest('.uw-annot')) return NodeFilter.FILTER_REJECT;
-            const t=n.parentElement && n.parentElement.tagName;
-            if (t==='SCRIPT'||t==='STYLE'||t==='NOSCRIPT') return NodeFilter.FILTER_REJECT;
-            return NodeFilter.FILTER_ACCEPT;
-          }
-        });
-        let node; while (node = walker.nextNode()){
-          const i = (node.nodeValue||'').indexOf(r.exact);
-          if (i >= 0){ const rng = document.createRange(); rng.setStart(node, i); rng.setEnd(node, i + r.exact.length); range = rng; break; }
-        }
-      }
       if (range) { try { wrapRange(range, r); } catch {} }
     }
   }
@@ -403,5 +431,16 @@ Double Enter = new paragraph."></textarea>
   // ---------- Boot ----------
   hydrateOnce();
   setTimeout(hydrateOnce, 1000);
-})();
 
+  // utils
+  function colors(){ return ['yellow','green','blue','pink','orange']; }
+  function dot(c){ return `<span class="uw-color" data-c="${c}" title="${c}"></span>`; }
+  function div(cls, html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
+  function showAt(node,x,y){ node.style.left=Math.round(x)+'px'; node.style.top=Math.round(y)+'px'; node.style.display='block'; }
+  function hide(node){ node.style.display='none'; }
+  function uid(){ return 'u' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
+  function rangeToAnchor(r){ return { startXPath:getXPath(r.startContainer), startOffset:r.startOffset, endXPath:getXPath(r.endContainer), endOffset:r.endOffset }; }
+  function getXPath(node){ if (!node) return null; const parts=[]; while (node && node.nodeType!==Node.DOCUMENT_NODE){ let i=1,s=node.previousSibling; while(s){ if(s.nodeName===node.nodeName) i++; s=s.previousSibling; } parts.unshift(node.nodeType===Node.TEXT_NODE?`text()[${i}]`:`${node.nodeName.toLowerCase()}[${i}]`); node=node.parentNode; } return '/'+parts.join('/'); }
+  function resolveXPath(x){ try{ return document.evaluate(x, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue||null; }catch{ return null; } }
+  function anchorToRange(a){ const sc=resolveXPath(a.startXPath), ec=resolveXPath(a.endXPath); if(!sc||!ec) return null; try{ const r=document.createRange(); r.setStart(sc, Math.min(a.startOffset,(sc.nodeValue||'').length)); r.setEnd(ec, Math.min(a.endOffset,(ec.nodeValue||'').length)); return r.collapsed?null:r; }catch{ return null; } }
+})();
