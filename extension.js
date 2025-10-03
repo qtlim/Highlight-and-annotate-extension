@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v3.9 (Custom Colors + Unified Text Size)
+// @name         Persistent Highlighter + Notes — v4.0 (List→Paragraph Gap + Saved Custom Swatches)
 // @namespace    qt-highlighter
-// @version      3.9.0
-// @description  Select text → Add → Markdown note. Hover shows popover (edit, delete, pin, color incl. picker). Robust persistence (GM storage + XPath), no duplicate wrapping, SPA-safe.
+// @version      4.0.0
+// @description  Select text → Add → Markdown note. Hover shows popover (edit, delete, pin, color incl. picker & saved custom swatches). Robust persistence (GM storage + XPath), SPA-safe.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
 // @run-at       document-end
@@ -17,7 +17,7 @@
   'use strict';
   if (location.href.startsWith('about:') || location.host.includes('addons.mozilla.org')) return;
 
-  // ---------- LIGHT THEME + spacing + unified font ----------
+  // ---------- THEME / TYPOGRAPHY ----------
   GM_addStyle(`
     .uw-annot { padding:0 1px; border-radius:2px; cursor:help; }
     .uw-annot[data-color="yellow"] { background: rgba(255,230,0,.65); }
@@ -38,14 +38,14 @@
       position:absolute; z-index:2147483647; display:none; max-width:380px;
       background:#fff; color:#222; border:1px solid #ddd; border-radius:10px; padding:10px;
       box-shadow:0 10px 28px rgba(0,0,0,.12);
-      font:14px/1.45 -apple-system, Segoe UI, Roboto, sans-serif; /* unified base size */
+      font:14px/1.45 -apple-system, Segoe UI, Roboto, sans-serif;
     }
     .uw-editor textarea {
       width:100%; min-height:120px; resize:vertical; box-sizing:border-box;
       border:1px solid #ccc; background:#fff; color:#222; border-radius:6px; padding:8px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
-    .uw-row { display:flex; align-items:center; gap:8px; margin-top:8px; }
+    .uw-row { display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap; }
     .uw-row .uw-spacer { flex:1; }
     .uw-btn { all:unset; cursor:pointer; background:#2b6; color:#fff; padding:6px 10px; border-radius:8px; font-weight:700; }
     .uw-btn.cancel { background:#888; }
@@ -57,37 +57,52 @@
     .uw-color[data-c="pink"]   { background:#ff8ad2; }
     .uw-color[data-c="orange"] { background:#ffc266; }
     .uw-color.active { outline:2px solid #333; }
+    .uw-custom { box-shadow: inset 0 0 0 2px #fff; border:1px solid #0002; }
 
     .uw-pop .uw-toolbar { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
     .uw-pop .uw-tool { all:unset; cursor:pointer; background:#f2f2f2; color:#333; padding:4px 8px; border-radius:6px; font-size:12px; border:1px solid #e1e1e1; }
     .uw-pop .uw-pin { all:unset; cursor:pointer; background:#f2f2f2; color:#333; padding:4px 8px; border-radius:6px; font-size:12px; border:1px solid #e1e1e1; }
     .uw-pop .uw-pin.active { background:#ffd400; color:#111; border-color:#e6c600; }
     .uw-pop .uw-close { margin-left:4px; }
-    .uw-pop .uw-colors { display:flex; gap:6px; margin-left:auto; align-items:center; }
-    .uw-pop input.uw-picker { width:22px; height:22px; border:none; padding:0; background:transparent; cursor:pointer; }
+    .uw-pop .uw-colors { display:flex; gap:6px; margin-left:auto; align-items:center; flex-wrap:wrap; }
+    .uw-pop input.uw-picker, .uw-editor input.uw-picker { width:22px; height:22px; border:none; padding:0; background:transparent; cursor:pointer; }
+    .uw-customs { display:flex; gap:6px; }
 
     .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:340px; overflow:auto; color:#222; }
-    /* inside markdown: same font size for p & li */
     .uw-pop .uw-content, .uw-pop .uw-content p, .uw-pop .uw-content li { font-size:14px; line-height:1.45; }
-    .uw-pop .uw-content p { margin: 10px 0; }           /* paragraph separation */
-    .uw-pop .uw-content ul { margin: 4px 0; padding-left: 18px; } /* small gap above/below lists */
-    .uw-pop .uw-content ul li { margin: 0; }            /* tight bullets */
+    .uw-pop .uw-content p { margin: 10px 0; }
+    .uw-pop .uw-content ul { margin: 4px 0; padding-left: 18px; }    /* tight list */
+    .uw-pop .uw-content ul + p { margin-top: 10px; }                  /* gap after a list → paragraph */
+    .uw-pop .uw-content p + ul { margin-top: 6px; }                   /* small gap paragraph → list */
+    .uw-pop .uw-content ul li { margin: 0; }
     .uw-pop .uw-content code { background:#f6f6f6; padding:2px 4px; border-radius:4px; }
     .uw-pop .uw-content pre { background:#f6f6f6; padding:8px; border-radius:6px; overflow:auto; }
   `);
 
-  // ---------- Storage ----------
+  // ---------- STORAGE ----------
   function pageKey() {
     try { const u = new URL(window.top.location.href); return `uw_annots::${u.origin}${u.pathname}`; }
     catch { const u = new URL(location.href); return `uw_annots::${u.origin}${u.pathname}`; }
   }
   const load = () => { try { return JSON.parse(GM_getValue(pageKey(), '[]')); } catch { return []; } };
   const save = (arr) => GM_setValue(pageKey(), JSON.stringify(arr));
+
+  // persistent custom swatches
+  const SWATCH_KEY = 'uw_custom_swatches';
+  const loadSwatches = () => { try { return JSON.parse(GM_getValue(SWATCH_KEY, '[]')); } catch { return []; } };
+  const saveSwatches = (arr) => GM_setValue(SWATCH_KEY, JSON.stringify(arr.slice(0,8)));
+  function addSwatch(hex){
+    hex = normalizeHex(hex);
+    if (!hex) return;
+    const arr = loadSwatches();
+    if (!arr.includes(hex)) { arr.unshift(hex); saveSwatches(arr); renderCustoms(); }
+  }
+
   function updateByUid(uid, fn){ const arr=load(); const i=arr.findIndex(r=>r.uid===uid); if(i>=0){arr[i]=fn(arr[i])||arr[i]; save(arr); return arr[i];} return null; }
   function deleteByUid(uid){ const arr=load(); const i=arr.findIndex(r=>r.uid===uid); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
   function deleteByAnchor(a){ const arr=load(); const i=arr.findIndex(r=>r.startXPath===a.startXPath&&r.startOffset===a.startOffset&&r.endXPath===a.endXPath&&r.endOffset===a.endOffset); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
 
-  // ---------- Markdown (tight lists; no <p> around lists) ----------
+  // ---------- MARKDOWN (tight lists; no <p> around lists) ----------
   function esc(s){ return s.replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m])); }
   function mdToHtml(md){
     if (!md) return '';
@@ -146,6 +161,7 @@ Double Enter = new paragraph."></textarea>
       <span>Color:</span>
       ${colors().map(c=>dot(c)).join('')}
       <input class="uw-picker" type="color" title="Custom color" value="#ffe600">
+      <div class="uw-customs uw-editor-customs"></div>
       <span class="uw-spacer"></span>
       <button class="uw-btn cancel">Cancel</button>
       <button class="uw-btn save">Save</button>
@@ -154,6 +170,7 @@ Double Enter = new paragraph."></textarea>
   const edText = editor.querySelector('textarea');
   const edDots = [...editor.querySelectorAll('.uw-color')];
   const edPicker = editor.querySelector('.uw-picker');
+  const edCustoms = editor.querySelector('.uw-editor-customs');
   const edCancel = editor.querySelector('.cancel');
   const edSave   = editor.querySelector('.save');
   let edColor='yellow', edHex=null, pendingRange=null, pendingAnchor=null;
@@ -172,6 +189,7 @@ Double Enter = new paragraph."></textarea>
       <div class="uw-colors">
         ${colors().map(c=>dot(c)).join('')}
         <input class="uw-picker" type="color" title="Custom color">
+        <div class="uw-customs uw-pop-customs"></div>
       </div>
     </div>
     <div class="uw-content"></div>
@@ -182,8 +200,39 @@ Double Enter = new paragraph."></textarea>
   const popClose= pop.querySelector('.uw-close');
   const popDots = [...pop.querySelectorAll('.uw-color')];
   const popPicker = pop.querySelector('.uw-picker');
+  const popCustoms = pop.querySelector('.uw-pop-customs');
   const popPin  = pop.querySelector('.uw-pin');
   let popSpan = null, isPinned = false, hideTimer = null;
+
+  // render saved custom swatches in both places
+  function renderCustoms(){
+    const sw = loadSwatches();
+    const mk = hex => `<span class="uw-color uw-custom" data-hex="${hex}" title="${hex}" style="background:${hex};"></span>`;
+    edCustoms.innerHTML  = sw.map(mk).join('');
+    popCustoms.innerHTML = sw.map(mk).join('');
+  }
+  renderCustoms();
+
+  function bindCustomClicks(scope){
+    scope.querySelectorAll('.uw-custom').forEach(el=>{
+      el.onclick = (e)=>{
+        const hex = e.currentTarget.getAttribute('data-hex');
+        if (!hex) return;
+        if (scope === editor){
+          edHex = hex; edColor='custom'; edPicker.value = hex;
+          edDots.forEach(x=>x.classList.remove('active'));
+        } else {
+          if (!popSpan) return;
+          applyColor(popSpan, hex);
+          popDots.forEach(x=>x.classList.remove('active'));
+          const rec = getRecForSpan(popSpan);
+          if (rec) updateByUid(rec.uid, r => ({...r, color:hex}));
+        }
+      };
+    });
+  }
+  bindCustomClicks(editor);
+  bindCustomClicks(pop);
 
   // ---------- Selection pill ----------
   document.addEventListener('selectionchange', () => {
@@ -207,6 +256,9 @@ Double Enter = new paragraph."></textarea>
   edPicker.addEventListener('input', ()=>{
     edHex = edPicker.value; edColor='custom';
     edDots.forEach(x=>x.classList.remove('active'));
+    addSwatch(edHex);
+    // rebind clicks (new DOM)
+    renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop);
   });
   edCancel.addEventListener('click', ()=>{ hide(editor); });
   edSave.onclick = saveNew;
@@ -224,7 +276,7 @@ Double Enter = new paragraph."></textarea>
 
   function saveNew(){
     if (!pendingRange || !pendingAnchor) return hide(editor);
-    const colorVal = edHex ? edHex : edColor; // store hex if custom
+    const colorVal = edHex ? edHex : edColor;
     const rec = {
       uid: uid(),
       noteMd: edText.value || '',
@@ -234,6 +286,7 @@ Double Enter = new paragraph."></textarea>
       exact: pendingRange.toString()
     };
     const arr=load(); arr.push(rec); save(arr);
+    if (colorVal.startsWith && colorVal.startsWith('#')) addSwatch(colorVal);
     wrapRange(pendingRange, rec);
     hide(editor); hide(pill);
     const sel=getSelection(); sel && sel.removeAllRanges();
@@ -243,11 +296,10 @@ Double Enter = new paragraph."></textarea>
   // ---------- Popover (sticky + pin) ----------
   function showPopoverFor(span){
     popSpan = span;
-    // reflect current color into controls
     const cur = span.getAttribute('data-color');
     const hex = span.getAttribute('data-hex');
     popDots.forEach(c=>c.classList.toggle('active', c.dataset.c===cur));
-    if (hex) popPicker.value = hex; else popPicker.value = guessHexFromName(cur);
+    popPicker.value = hex ? hex : guessHexFromName(cur);
     popContent.innerHTML = mdToHtml(span.getAttribute('data-md') || '');
     const rect = span.getBoundingClientRect();
     showAt(pop, rect.left + window.scrollX, rect.bottom + window.scrollY + 6);
@@ -257,17 +309,13 @@ Double Enter = new paragraph."></textarea>
     if (isPinned) return;
     if (!pop.matches(':hover') && !(popSpan && popSpan.matches(':hover'))) hide(pop);
   }
-
   document.addEventListener('mouseover', (e) => {
-    const span = e.target.closest('.uw-annot');
-    if (!span) return;
-    clearHideTimer();
-    showPopoverFor(span);
+    const span = e.target.closest('.uw-annot'); if (!span) return;
+    clearHideTimer(); showPopoverFor(span);
   }, true);
   document.addEventListener('mouseout', (e) => {
     if (!e.target.closest('.uw-annot') || isPinned) return;
-    clearHideTimer();
-    hideTimer = setTimeout(maybeHide, 220);
+    clearHideTimer(); hideTimer = setTimeout(maybeHide, 220);
   }, true);
   pop.addEventListener('mouseenter', clearHideTimer);
   pop.addEventListener('mouseleave', () => { if (!isPinned) maybeHide(); });
@@ -278,7 +326,7 @@ Double Enter = new paragraph."></textarea>
   });
   popClose.addEventListener('click', () => { isPinned=false; popPin.classList.remove('active'); hide(pop); });
 
-  // EDIT — close popover, then show editor (no auto-pin)
+  // EDIT — close popover, then show editor
   popEdit.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!popSpan) return;
@@ -286,7 +334,7 @@ Double Enter = new paragraph."></textarea>
     isPinned = false; popPin.classList.remove('active'); hide(pop);
 
     edText.value = rec.noteMd || '';
-    if (rec.color && rec.color.startsWith('#')) { edHex = rec.color; edColor='custom'; edPicker.value=rec.color; }
+    if (rec.color && rec.color.startsWith('#')) { edHex = rec.color; edColor='custom'; edPicker.value=rec.color; addSwatch(rec.color); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop); }
     else { edHex=null; edColor=rec.color||'yellow'; edPicker.value=guessHexFromName(edColor); }
     edDots.forEach(x => x.classList.toggle('active', x.dataset.c === edColor));
 
@@ -301,11 +349,12 @@ Double Enter = new paragraph."></textarea>
         const span = document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`);
         if (span){ applyColor(span, updated.color); span.setAttribute('data-md', updated.noteMd); }
       }
+      if (newColor.startsWith && newColor.startsWith('#')) { addSwatch(newColor); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop); }
       edSave.onclick = saveNew; hide(editor);
     };
   });
 
-  // DELETE — remove from storage first, then DOM, then quick rehydrate
+  // DELETE
   popDel.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!popSpan) return;
@@ -323,28 +372,25 @@ Double Enter = new paragraph."></textarea>
     setTimeout(hydrateOnce, 20);
   });
 
-  // Color swatches in popover
+  // Swatches in popover
   popDots.forEach(s=>s.addEventListener('click',(e)=>{
     e.stopPropagation();
     if (!popSpan) return;
-    const c = s.dataset.c;
-    popDots.forEach(x=>x.classList.toggle('active', x===s));
+    const c = s.dataset.c; popDots.forEach(x=>x.classList.toggle('active', x===s));
     applyColor(popSpan, c);
     const rec = getRecForSpan(popSpan);
     if (rec) updateByUid(rec.uid, r => ({...r, color:c}));
   }));
-
-  // Color picker in popover — saves custom hex
   popPicker.addEventListener('input', (e)=>{
     if (!popSpan) return;
-    const hex = e.target.value;
-    applyColor(popSpan, hex);
+    const hex = e.target.value; applyColor(popSpan, hex);
     popDots.forEach(x=>x.classList.remove('active'));
     const rec = getRecForSpan(popSpan);
     if (rec) updateByUid(rec.uid, r => ({...r, color:hex}));
+    addSwatch(hex); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop);
   });
 
-  // ---------- DOM/anchor helpers ----------
+  // ---------- HELPERS ----------
   function div(cls, html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
   function colors(){ return ['yellow','green','blue','pink','orange']; }
   function dot(c){ return `<span class="uw-color" data-c="${c}" title="${c}"></span>`; }
@@ -415,23 +461,23 @@ Double Enter = new paragraph."></textarea>
   }
 
   function applyColor(span, color){
-    // color can be a named swatch (yellow/green/blue/pink/orange) or a hex like "#ffcc00"
     if (color && color.startsWith && color.startsWith('#')){
       span.setAttribute('data-color', 'custom');
-      span.setAttribute('data-hex', color);
+      span.setAttribute('data-hex', normalizeHex(color));
       span.style.background = hexToRgba(color, 0.6);
     } else {
       span.setAttribute('data-color', color || 'yellow');
       span.removeAttribute('data-hex');
-      span.style.background = ''; // let CSS handle named colors
+      span.style.background = ''; // CSS swatch takes over
     }
   }
   function hexToRgba(hex, a){
-    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(normalizeHex(hex));
     if (!m) return hex;
     const r = parseInt(m[1],16), g = parseInt(m[2],16), b = parseInt(m[3],16);
     return `rgba(${r},${g},${b},${a==null?0.6:a})`;
   }
+  function normalizeHex(h){ if (!h) return null; h = h.trim(); if (!h.startsWith('#')) h = '#'+h; if (/^#([a-f0-9]{3})$/i.test(h)) h = '#'+h.slice(1).split('').map(c=>c+c).join(''); return /^#[a-f0-9]{6}$/i.test(h)?h:null; }
   function guessHexFromName(name){
     switch(name){
       case 'yellow': return '#ffe600';
@@ -442,7 +488,6 @@ Double Enter = new paragraph."></textarea>
       default: return '#ffe600';
     }
   }
-
   function getRecForSpan(span){
     const uidVal = span.getAttribute('data-uid');
     if (uidVal){
@@ -460,7 +505,7 @@ Double Enter = new paragraph."></textarea>
     return null;
   }
 
-  // ---------- Hydration ----------
+  // ---------- HYDRATE / OBSERVE ----------
   function hydrateOnce(){
     const arr = load();
     for (const r of arr) {
@@ -472,7 +517,7 @@ Double Enter = new paragraph."></textarea>
   const mo = new MutationObserver(()=>{ clearTimeout(mo._t); mo._t = setTimeout(hydrateOnce, 400); });
   mo.observe(document.documentElement, { childList:true, subtree:true });
 
-  // ---------- Menu helpers ----------
+  // ---------- MENU ----------
   if (typeof GM_registerMenuCommand === 'function') {
     GM_registerMenuCommand('Add highlight from selection', ()=>{
       const sel=getSelection(); if (!sel || sel.rangeCount===0) return;
@@ -488,19 +533,7 @@ Double Enter = new paragraph."></textarea>
     });
   }
 
-  // ---------- Boot ----------
+  // ---------- BOOT ----------
   hydrateOnce();
   setTimeout(hydrateOnce, 1000);
-
-  // utils
-  function colors(){ return ['yellow','green','blue','pink','orange']; }
-  function dot(c){ return `<span class="uw-color" data-c="${c}" title="${c}"></span>`; }
-  function div(cls, html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
-  function showAt(node,x,y){ node.style.left=Math.round(x)+'px'; node.style.top=Math.round(y)+'px'; node.style.display='block'; }
-  function hide(node){ node.style.display='none'; }
-  function uid(){ return 'u' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
-  function rangeToAnchor(r){ return { startXPath:getXPath(r.startContainer), startOffset:r.startOffset, endXPath:getXPath(r.endContainer), endOffset:r.endOffset }; }
-  function getXPath(node){ if (!node) return null; const parts=[]; while (node && node.nodeType!==Node.DOCUMENT_NODE){ let i=1,s=node.previousSibling; while(s){ if(s.nodeName===node.nodeName) i++; s=s.previousSibling; } parts.unshift(node.nodeType===Node.TEXT_NODE?`text()[${i}]`:`${node.nodeName.toLowerCase()}[${i}]`); node=node.parentNode; } return '/'+parts.join('/'); }
-  function resolveXPath(x){ try{ return document.evaluate(x, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue||null; }catch{ return null; } }
-  function anchorToRange(a){ const sc=resolveXPath(a.startXPath), ec=resolveXPath(a.endXPath); if(!sc||!ec) return null; try{ const r=document.createRange(); r.setStart(sc, Math.min(a.startOffset,(sc.nodeValue||'').length)); r.setEnd(ec, Math.min(a.endOffset,(ec.nodeValue||'').length)); return r.collapsed?null:r; }catch{ return null; } }
 })();
