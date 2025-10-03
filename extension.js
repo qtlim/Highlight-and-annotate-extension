@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v3.5 (Solid Edit/Delete, Real Bullets, Light UI, Pin)
+// @name         Persistent Highlighter + Notes — v3.6 (Solid Edit/Delete, Better Paragraph/List Spacing, Light UI)
 // @namespace    qt-highlighter
-// @version      3.5.0
-// @description  Select text → Add → Markdown note. Hover shows popover (pin/close, edit, delete, color). Robust persistence (GM storage + XPath), UID+anchor tagging, no duplicate wrapping, works in iframes & SPA rerenders.
+// @version      3.6.0
+// @description  Select text → Add → Markdown note. Hover shows popover (edit, delete, pin, color). Robust persistence (GM storage + XPath), no duplicate wrapping, works in iframes & SPA rerenders.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
 // @run-at       document-end
@@ -17,7 +17,7 @@
   'use strict';
   if (location.href.startsWith('about:') || location.host.includes('addons.mozilla.org')) return;
 
-  // ---------- LIGHT THEME ----------
+  // ---------- LIGHT THEME + spacing tweaks ----------
   GM_addStyle(`
     .uw-annot { padding:0 1px; border-radius:2px; cursor:help; }
     .uw-annot[data-color="yellow"] { background: rgba(255,230,0,.65); }
@@ -38,7 +38,7 @@
       position:absolute; z-index:2147483647; display:none; max-width:380px;
       background:#ffffff; color:#222; border:1px solid #ddd; border-radius:10px; padding:10px;
       box-shadow:0 10px 28px rgba(0,0,0,.12);
-      font:13px/1.35 -apple-system, Segoe UI, Roboto, sans-serif;
+      font:13px/1.38 -apple-system, Segoe UI, Roboto, sans-serif;
     }
     .uw-editor textarea {
       width:100%; min-height:120px; resize:vertical; box-sizing:border-box;
@@ -63,9 +63,12 @@
     .uw-pop .uw-pin.active { background:#ffd400; color:#111; border-color:#e6c600; }
     .uw-pop .uw-close { margin-left:4px; }
     .uw-pop .uw-colors { display:flex; gap:6px; margin-left:auto; }
-    .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:320px; overflow:auto; color:#222; }
-    .uw-pop .uw-content p { margin:6px 0; }
-    .uw-pop .uw-content ul { margin:6px 0 6px 20px; }
+    .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:340px; overflow:auto; color:#222; }
+
+    /* Spacing rules INSIDE the rendered markdown */
+    .uw-pop .uw-content p { margin: 10px 0; }            /* more separation between paragraphs */
+    .uw-pop .uw-content ul { margin: 6px 0 6px 18px; }   /* modest list margins */
+    .uw-pop .uw-content ul li { margin: 2px 0; }         /* tighter spacing between bullets */
     .uw-pop .uw-content code { background:#f6f6f6; padding:2px 4px; border-radius:4px; }
     .uw-pop .uw-content pre { background:#f6f6f6; padding:8px; border-radius:6px; overflow:auto; }
   `);
@@ -85,14 +88,13 @@
   function esc(s){ return s.replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m])); }
   function mdToHtml(md){
     if (!md) return '';
-    // code blocks
-    const codeBlocks = [];
-    md = md.replace(/```([\s\S]*?)```/g, (_,code)=>{ codeBlocks.push(code); return `\uE000${codeBlocks.length-1}\uE000`; });
+    // code blocks first (placeholder tokens)
+    const blocks = [];
+    md = md.replace(/```([\s\S]*?)```/g, (_,code)=>{ blocks.push(code); return `\uE000${blocks.length-1}\uE000`; });
 
-    // escape
     let text = esc(md);
 
-    // block-level: headings
+    // headings
     text = text.replace(/^###### (.+)$/gm,'<h6>$1</h6>')
                .replace(/^##### (.+)$/gm,'<h5>$1</h5>')
                .replace(/^#### (.+)$/gm,'<h4>$1</h4>')
@@ -100,9 +102,8 @@
                .replace(/^## (.+)$/gm,'<h2>$1</h2>')
                .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
 
-    // lists (handle lines starting with "- " or "* ")
-    const lines = text.split('\n');
-    let out=[], inList=false;
+    // lists (treat lines starting with "- " or "* ")
+    const lines = text.split('\n'); let out=[], inList=false;
     for (const line of lines){
       if (/^\s*[-*]\s+/.test(line)) {
         if (!inList){ out.push('<ul>'); inList=true; }
@@ -115,17 +116,16 @@
     if (inList) out.push('</ul>');
     text = out.join('\n');
 
-    // paragraphs (double newline), preserve single newlines as <br>
+    // paragraphs (double newline = new paragraph; single newline = <br>)
     text = text.split(/\n{2,}/).map(p=>`<p>${p.replace(/\n/g,'<br>')}</p>`).join('');
 
-    // inline: code, bold, italic — avoid matching list markers by not using start-of-line "* "
+    // inline formatting
     text = text.replace(/`([^`]+)`/g, '<code>$1</code>')
                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>'); // italic not at start of line bullet
+               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>'); // italic (avoid list markers)
 
     // restore code blocks
-    text = text.replace(/\uE000(\d+)\uE000/g, (_,i)=>`<pre><code>${esc(codeBlocks[+i])}</code></pre>`);
-
+    text = text.replace(/\uE000(\d+)\uE000/g, (_,i)=>`<pre><code>${esc(blocks[+i])}</code></pre>`);
     return text;
   }
 
@@ -154,6 +154,12 @@ Double Enter = new paragraph."></textarea>
   const edCancel = editor.querySelector('.cancel');
   const edSave   = editor.querySelector('.save');
   let edColor='yellow', pendingRange=null, pendingAnchor=null;
+
+  // editor keyboard shortcuts
+  editor.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); edCancel.click(); }
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); edSave.click(); }
+  });
 
   const pop = div('uw-pop',`
     <div class="uw-toolbar">
@@ -187,9 +193,9 @@ Double Enter = new paragraph."></textarea>
   document.addEventListener('mousedown', e => { if (!pill.contains(e.target) && !editor.contains(e.target) && !pop.contains(e.target)) hide(pill); }, true);
   pillBtn.addEventListener('click', e => { e.preventDefault(); openEditorFromSelection(); });
 
-  // ---------- Editor ----------
+  // ---------- Editor actions ----------
   edDots.forEach(s=>s.addEventListener('click',()=>{ edColor=s.dataset.c; edDots.forEach(x=>x.classList.toggle('active', x===s)); }));
-  edCancel.addEventListener('click', ()=>{ edSave.onclick = saveNew; hide(editor); });
+  edCancel.addEventListener('click', ()=>{ hide(editor); });
   edSave.onclick = saveNew;
 
   function openEditorFromSelection(){
@@ -198,7 +204,7 @@ Double Enter = new paragraph."></textarea>
     pendingRange = r.cloneRange();
     pendingAnchor = rangeToAnchor(pendingRange);
     edText.value=''; edColor='yellow'; edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
-    const rc=r.getBoundingClientRect(); showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+8); edText.focus();
+    const rc=r.getBoundingClientRect(); showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+10); edText.focus();
   }
 
   function saveNew(){
@@ -216,17 +222,6 @@ Double Enter = new paragraph."></textarea>
     hide(editor); hide(pill);
     const sel=getSelection(); sel && sel.removeAllRanges();
     pendingRange=null; pendingAnchor=null;
-  }
-
-  function saveEdit(rec){
-    const updated = updateByUid(rec.uid, r => ({...r, noteMd: edText.value || '', color: edColor}));
-    if (updated){
-      const span = document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`);
-      if (span){ span.setAttribute('data-md', updated.noteMd); span.setAttribute('data-color', updated.color); }
-    }
-    edSave.onclick = saveNew;
-    hide(editor); // keep popover (pinned) if you want, but close it for clarity:
-    isPinned=false; popPin.classList.remove('active'); hide(pop);
   }
 
   // ---------- Popover (sticky + pin) ----------
@@ -267,19 +262,33 @@ Double Enter = new paragraph."></textarea>
   });
   popClose.addEventListener('click', () => { isPinned=false; popPin.classList.remove('active'); hide(pop); });
 
-  // EDIT — now opens the editor immediately and pins the popover while editing
+  // EDIT — close popover, then show editor (no auto-pin)
   popEdit.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!popSpan) return;
     const rec = getRecForSpan(popSpan); if (!rec) return;
-    isPinned = true; popPin.classList.add('active'); // keep popover visible
+
+    isPinned = false;
+    popPin.classList.remove('active');
+    hide(pop);
+
     edText.value = rec.noteMd || '';
     edColor = rec.color || 'yellow';
-    edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
+    edDots.forEach(x => x.classList.toggle('active', x.dataset.c === edColor));
+
     const rect = popSpan.getBoundingClientRect();
-    showAt(editor, rect.left + window.scrollX, rect.bottom + window.scrollY + 8);
+    showAt(editor, rect.left + window.scrollX, rect.bottom + window.scrollY + 10);
     edText.focus();
-    edSave.onclick = ()=>saveEdit(rec);
+
+    edSave.onclick = () => {
+      const updated = updateByUid(rec.uid, r => ({...r, noteMd: edText.value || '', color: edColor}));
+      if (updated){
+        const span = document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`);
+        if (span){ span.setAttribute('data-md', updated.noteMd); span.setAttribute('data-color', updated.color); }
+      }
+      edSave.onclick = saveNew;
+      hide(editor);
+    };
   });
 
   // DELETE — remove from storage first, then DOM, then quick rehydrate
@@ -418,7 +427,7 @@ Double Enter = new paragraph."></textarea>
       const r=sel.getRangeAt(0); if (r.collapsed) return;
       pendingRange = r.cloneRange(); pendingAnchor = rangeToAnchor(pendingRange);
       edText.value=''; edColor='yellow'; edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
-      const rc=r.getBoundingClientRect(); showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+8); edText.focus();
+      const rc=r.getBoundingClientRect(); showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+10); edText.focus();
     });
     GM_registerMenuCommand('List annotations', ()=>{
       const arr = load(); if (!arr.length) return alert('No annotations for this page.');
