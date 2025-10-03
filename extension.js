@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — Solid Edit/Delete, Light UI, Pin
+// @name         Persistent Highlighter + Notes — v3.5 (Solid Edit/Delete, Real Bullets, Light UI, Pin)
 // @namespace    qt-highlighter
-// @version      3.4.0
+// @version      3.5.0
 // @description  Select text → Add → Markdown note. Hover shows popover (pin/close, edit, delete, color). Robust persistence (GM storage + XPath), UID+anchor tagging, no duplicate wrapping, works in iframes & SPA rerenders.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
@@ -64,69 +64,72 @@
     .uw-pop .uw-close { margin-left:4px; }
     .uw-pop .uw-colors { display:flex; gap:6px; margin-left:auto; }
     .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:320px; overflow:auto; color:#222; }
-    .uw-pop .uw-content p { margin: 6px 0; }
+    .uw-pop .uw-content p { margin:6px 0; }
     .uw-pop .uw-content ul { margin:6px 0 6px 20px; }
     .uw-pop .uw-content code { background:#f6f6f6; padding:2px 4px; border-radius:4px; }
     .uw-pop .uw-content pre { background:#f6f6f6; padding:8px; border-radius:6px; overflow:auto; }
   `);
 
-  // ---------- Storage (GM, keyed by top-level URL) ----------
+  // ---------- Storage ----------
   function pageKey() {
     try { const u = new URL(window.top.location.href); return `uw_annots::${u.origin}${u.pathname}`; }
     catch { const u = new URL(location.href); return `uw_annots::${u.origin}${u.pathname}`; }
   }
   const load = () => { try { return JSON.parse(GM_getValue(pageKey(), '[]')); } catch { return []; } };
   const save = (arr) => GM_setValue(pageKey(), JSON.stringify(arr));
+  function updateByUid(uid, fn){ const arr=load(); const i=arr.findIndex(r=>r.uid===uid); if(i>=0){arr[i]=fn(arr[i])||arr[i]; save(arr); return arr[i];} return null; }
+  function deleteByUid(uid){ const arr=load(); const i=arr.findIndex(r=>r.uid===uid); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
+  function deleteByAnchor(a){ const arr=load(); const i=arr.findIndex(r=>r.startXPath===a.startXPath&&r.startOffset===a.startOffset&&r.endXPath===a.endXPath&&r.endOffset===a.endOffset); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
 
-  function updateByUid(uid, fn){
-    const arr = load();
-    const i = arr.findIndex(r => r.uid === uid);
-    if (i >= 0) { arr[i] = fn(arr[i]) || arr[i]; save(arr); return arr[i]; }
-    return null;
-  }
-  function deleteByUid(uid){
-    const arr = load();
-    const i = arr.findIndex(r => r.uid === uid);
-    if (i >= 0) { arr.splice(i,1); save(arr); return true; }
-    return false;
-  }
-  function deleteByAnchor(a){
-    const arr = load();
-    const i = arr.findIndex(r =>
-      r.startXPath === a.startXPath && r.startOffset === a.startOffset &&
-      r.endXPath   === a.endXPath   && r.endOffset   === a.endOffset
-    );
-    if (i >= 0) { arr.splice(i,1); save(arr); return true; }
-    return false;
-  }
-
-  // ---------- Markdown renderer (basic) ----------
+  // ---------- Markdown (lists first, then inline) ----------
   function esc(s){ return s.replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m])); }
   function mdToHtml(md){
     if (!md) return '';
-    md = md.replace(/```([\s\S]*?)```/g, (_,code)=>`<pre><code>${esc(code)}</code></pre>`);
-    let html = esc(md);
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>')
-               .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-               .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-               .replace(/^###### (.+)$/gm,'<h6>$1</h6>')
+    // code blocks
+    const codeBlocks = [];
+    md = md.replace(/```([\s\S]*?)```/g, (_,code)=>{ codeBlocks.push(code); return `\uE000${codeBlocks.length-1}\uE000`; });
+
+    // escape
+    let text = esc(md);
+
+    // block-level: headings
+    text = text.replace(/^###### (.+)$/gm,'<h6>$1</h6>')
                .replace(/^##### (.+)$/gm,'<h5>$1</h5>')
                .replace(/^#### (.+)$/gm,'<h4>$1</h4>')
                .replace(/^### (.+)$/gm,'<h3>$1</h3>')
                .replace(/^## (.+)$/gm,'<h2>$1</h2>')
                .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
-    const lines = html.split('\n'); let out=[], inList=false;
+
+    // lists (handle lines starting with "- " or "* ")
+    const lines = text.split('\n');
+    let out=[], inList=false;
     for (const line of lines){
-      if (/^\s*[-*]\s+/.test(line)) { if (!inList){ out.push('<ul>'); inList=true; } out.push('<li>'+line.replace(/^\s*[-*]\s+/, '')+'</li>'); }
-      else { if (inList){ out.push('</ul>'); inList=false; } out.push(line); }
+      if (/^\s*[-*]\s+/.test(line)) {
+        if (!inList){ out.push('<ul>'); inList=true; }
+        out.push('<li>' + line.replace(/^\s*[-*]\s+/, '') + '</li>');
+      } else {
+        if (inList){ out.push('</ul>'); inList=false; }
+        out.push(line);
+      }
     }
     if (inList) out.push('</ul>');
-    html = out.join('\n');
-    html = html.split(/\n{2,}/).map(p=>`<p>${p.replace(/\n/g,'<br>')}</p>`).join('');
-    return html;
+    text = out.join('\n');
+
+    // paragraphs (double newline), preserve single newlines as <br>
+    text = text.split(/\n{2,}/).map(p=>`<p>${p.replace(/\n/g,'<br>')}</p>`).join('');
+
+    // inline: code, bold, italic — avoid matching list markers by not using start-of-line "* "
+    text = text.replace(/`([^`]+)`/g, '<code>$1</code>')
+               .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>'); // italic not at start of line bullet
+
+    // restore code blocks
+    text = text.replace(/\uE000(\d+)\uE000/g, (_,i)=>`<pre><code>${esc(codeBlocks[+i])}</code></pre>`);
+
+    return text;
   }
 
-  // ---------- UI elements ----------
+  // ---------- UI ----------
   const pill = div('uw-pill',`Annotate <button>Add</button>`); document.documentElement.appendChild(pill);
   const pillBtn = pill.querySelector('button');
 
@@ -150,7 +153,7 @@ Double Enter = new paragraph."></textarea>
   const edDots = [...editor.querySelectorAll('.uw-color')];
   const edCancel = editor.querySelector('.cancel');
   const edSave   = editor.querySelector('.save');
-  let edColor='yellow', pendingRange=null, pendingAnchor=null, pendingUid=null;
+  let edColor='yellow', pendingRange=null, pendingAnchor=null;
 
   const pop = div('uw-pop',`
     <div class="uw-toolbar">
@@ -186,7 +189,7 @@ Double Enter = new paragraph."></textarea>
 
   // ---------- Editor ----------
   edDots.forEach(s=>s.addEventListener('click',()=>{ edColor=s.dataset.c; edDots.forEach(x=>x.classList.toggle('active', x===s)); }));
-  edCancel.addEventListener('click', ()=>{ edSave.onclick = saveNew; hide(editor); pendingUid=null; });
+  edCancel.addEventListener('click', ()=>{ edSave.onclick = saveNew; hide(editor); });
   edSave.onclick = saveNew;
 
   function openEditorFromSelection(){
@@ -194,7 +197,6 @@ Double Enter = new paragraph."></textarea>
     const r=sel.getRangeAt(0); if (r.collapsed) return;
     pendingRange = r.cloneRange();
     pendingAnchor = rangeToAnchor(pendingRange);
-    pendingUid = null; // new
     edText.value=''; edColor='yellow'; edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
     const rc=r.getBoundingClientRect(); showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+8); edText.focus();
   }
@@ -210,7 +212,10 @@ Double Enter = new paragraph."></textarea>
       exact: pendingRange.toString()
     };
     const arr=load(); arr.push(rec); save(arr);
-    wrapRange(pendingRange, rec); finishEditor();
+    wrapRange(pendingRange, rec);
+    hide(editor); hide(pill);
+    const sel=getSelection(); sel && sel.removeAllRanges();
+    pendingRange=null; pendingAnchor=null;
   }
 
   function saveEdit(rec){
@@ -219,13 +224,9 @@ Double Enter = new paragraph."></textarea>
       const span = document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`);
       if (span){ span.setAttribute('data-md', updated.noteMd); span.setAttribute('data-color', updated.color); }
     }
-    edSave.onclick = saveNew; pendingUid=null; hide(editor); hide(pop);
-  }
-
-  function finishEditor(){
-    hide(editor); hide(pill);
-    const sel=getSelection(); sel && sel.removeAllRanges();
-    pendingRange=null; pendingAnchor=null; pendingUid=null;
+    edSave.onclick = saveNew;
+    hide(editor); // keep popover (pinned) if you want, but close it for clarity:
+    isPinned=false; popPin.classList.remove('active'); hide(pop);
   }
 
   // ---------- Popover (sticky + pin) ----------
@@ -266,11 +267,12 @@ Double Enter = new paragraph."></textarea>
   });
   popClose.addEventListener('click', () => { isPinned=false; popPin.classList.remove('active'); hide(pop); });
 
-  // Edit (UID first, then anchor fallback)
-  popEdit.addEventListener('click', () => {
+  // EDIT — now opens the editor immediately and pins the popover while editing
+  popEdit.addEventListener('click', (e) => {
+    e.stopPropagation();
     if (!popSpan) return;
-    const rec = getRecForSpan(popSpan);
-    if (!rec) return;
+    const rec = getRecForSpan(popSpan); if (!rec) return;
+    isPinned = true; popPin.classList.add('active'); // keep popover visible
     edText.value = rec.noteMd || '';
     edColor = rec.color || 'yellow';
     edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
@@ -280,8 +282,9 @@ Double Enter = new paragraph."></textarea>
     edSave.onclick = ()=>saveEdit(rec);
   });
 
-  // Delete (UID first, then anchor fallback; remove from storage BEFORE DOM)
-  popDel.addEventListener('click', () => {
+  // DELETE — remove from storage first, then DOM, then quick rehydrate
+  popDel.addEventListener('click', (e) => {
+    e.stopPropagation();
     if (!popSpan) return;
     const uidVal = popSpan.getAttribute('data-uid');
     let removed = false;
@@ -290,16 +293,17 @@ Double Enter = new paragraph."></textarea>
       const a = spanAnchorFromDataset(popSpan);
       if (a) removed = deleteByAnchor(a);
     }
-    // unwrap DOM regardless
+    // unwrap
     const span = popSpan, parent = span.parentNode;
     while (span.firstChild) parent.insertBefore(span.firstChild, span);
     parent.removeChild(span);
     hide(pop);
-    setTimeout(hydrateOnce, 20); // reapply others only
+    setTimeout(hydrateOnce, 20);
   });
 
-  // Color change (live + persistent with fallbacks)
-  popDots.forEach(s=>s.addEventListener('click',()=>{
+  // Color change (live + persistent)
+  popDots.forEach(s=>s.addEventListener('click',(e)=>{
+    e.stopPropagation();
     if (!popSpan) return;
     const c = s.dataset.c; popDots.forEach(x=>x.classList.toggle('active', x===s));
     popSpan.setAttribute('data-color', c);
@@ -307,7 +311,7 @@ Double Enter = new paragraph."></textarea>
     if (rec) updateByUid(rec.uid, r => ({...r, color:c}));
   }));
 
-  // ---------- DOM helpers ----------
+  // ---------- DOM/anchor helpers ----------
   function div(cls, html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
   function colors(){ return ['yellow','green','blue','pink','orange']; }
   function dot(c){ return `<span class="uw-color" data-c="${c}" title="${c}"></span>`; }
@@ -315,7 +319,6 @@ Double Enter = new paragraph."></textarea>
   function hide(node){ node.style.display='none'; }
   function uid(){ return 'u' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
 
-  // ---------- Anchoring ----------
   function getXPath(node){
     if (!node) return null;
     const parts=[];
@@ -345,7 +348,6 @@ Double Enter = new paragraph."></textarea>
       return r.collapsed ? null : r;
     } catch { return null; }
   }
-
   function spanAnchorFromDataset(span){
     const sx = span.getAttribute('data-sx'), so = span.getAttribute('data-so'),
           ex = span.getAttribute('data-ex'), eo = span.getAttribute('data-eo');
@@ -354,9 +356,7 @@ Double Enter = new paragraph."></textarea>
   }
 
   function wrapRange(range, rec){
-    // skip if this UID already exists
     if (document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`)) return;
-    // skip if selection lives inside an existing highlight
     if (range.commonAncestorContainer &&
         range.commonAncestorContainer.parentElement &&
         range.commonAncestorContainer.parentElement.closest &&
@@ -367,7 +367,6 @@ Double Enter = new paragraph."></textarea>
     span.setAttribute('data-uid', rec.uid);
     span.setAttribute('data-md',  rec.noteMd || '');
     span.setAttribute('data-color', rec.color || 'yellow');
-    // also tag anchors so edit/delete have a fallback
     span.setAttribute('data-sx', rec.startXPath);
     span.setAttribute('data-so', rec.startOffset);
     span.setAttribute('data-ex', rec.endXPath);
@@ -400,16 +399,15 @@ Double Enter = new paragraph."></textarea>
     return null;
   }
 
-  // ---------- Hydration (no duplicates) ----------
+  // ---------- Hydration ----------
   function hydrateOnce(){
     const arr = load();
     for (const r of arr) {
       if (document.querySelector(`.uw-annot[data-uid="${r.uid}"]`)) continue;
-      let range = anchorToRange(r);
+      const range = anchorToRange(r);
       if (range) { try { wrapRange(range, r); } catch {} }
     }
   }
-
   const mo = new MutationObserver(()=>{ clearTimeout(mo._t); mo._t = setTimeout(hydrateOnce, 400); });
   mo.observe(document.documentElement, { childList:true, subtree:true });
 
