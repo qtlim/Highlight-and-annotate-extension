@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v4.1 (Deduped Custom Swatches + Better List Spacing)
+// @name         Persistent Highlighter + Notes — v4.1.1 (Deduped Custom Swatches + Better List Spacing)
 // @namespace    qt-highlighter
-// @version      4.1.0
+// @version      4.1.1
 // @description  Select text → Add → Markdown note. Hover shows popover (edit, delete, pin, color incl. picker & saved custom swatches). Robust persistence (GM storage + XPath), SPA-safe.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
@@ -70,11 +70,11 @@
 
     .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:340px; overflow:auto; color:#222; }
     .uw-pop .uw-content, .uw-pop .uw-content p, .uw-pop .uw-content li { font-size:14px; line-height:1.45; }
-    .uw-pop .uw-content p { margin: 10px 0; }                     /* paragraph gap */
-    .uw-pop .uw-content ul { margin: 2px 0; padding-left:18px; }  /* tight list */
+    .uw-pop .uw-content p { margin: 10px 0; }
+    .uw-pop .uw-content ul { margin: 2px 0; padding-left:18px; }
     .uw-pop .uw-content ul li { margin: 0; }
-    .uw-pop .uw-content p + ul { margin-top: 8px !important; }    /* paragraph → list */
-    .uw-pop .uw-content ul + p { margin-top: 14px !important; }   /* list → paragraph */
+    .uw-pop .uw-content p + ul { margin-top: 8px !important; }   /* paragraph → list */
+    .uw-pop .uw-content ul + p { margin-top: 14px !important; }  /* list → paragraph */
     .uw-pop .uw-content code { background:#f6f6f6; padding:2px 4px; border-radius:4px; }
     .uw-pop .uw-content pre { background:#f6f6f6; padding:8px; border-radius:6px; overflow:auto; }
   `);
@@ -117,7 +117,7 @@
   function deleteByUid(uid){ const arr=load(); const i=arr.findIndex(r=>r.uid===uid); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
   function deleteByAnchor(a){ const arr=load(); const i=arr.findIndex(r=>r.startXPath===a.startXPath&&r.startOffset===a.startOffset&&r.endXPath===a.endXPath&&r.endOffset===a.endOffset); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
 
-  // ---------- MARKDOWN (tight lists; no <p> around lists) ----------
+  // ---------- MARKDOWN ----------
   function esc(s){ return s.replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m])); }
   function mdToHtml(md){
     if (!md) return '';
@@ -161,6 +161,9 @@
   }
 
   // ---------- UI ----------
+  // shared state
+  let pendingRange=null, pendingAnchor=null, edColor='yellow', edHex=null;
+
   const pill = div('uw-pill',`Annotate <button>Add</button>`); document.documentElement.appendChild(pill);
   const pillBtn = pill.querySelector('button');
 
@@ -188,7 +191,6 @@ Double Enter = new paragraph."></textarea>
   const edCustoms = editor.querySelector('.uw-editor-customs');
   const edCancel = editor.querySelector('.cancel');
   const edSave   = editor.querySelector('.save');
-  let edColor='yellow', edHex=null, pendingRange=null, pendingAnchor=null;
 
   editor.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') { ev.preventDefault(); edCancel.click(); }
@@ -250,7 +252,7 @@ Double Enter = new paragraph."></textarea>
   bindCustomClicks(pop);
 
   // ---------- Selection pill ----------
-  document.addEventListener('selectionchange', () => {
+  function updatePillFromSelection(){
     const sel = getSelection();
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return hide(pill);
     const r = sel.getRangeAt(0);
@@ -259,7 +261,11 @@ Double Enter = new paragraph."></textarea>
     const rect = r.getBoundingClientRect();
     if (!rect || (!rect.width && !rect.height)) return hide(pill);
     showAt(pill, rect.right + window.scrollX + 8, rect.top + window.scrollY - 8);
-  });
+  }
+  document.addEventListener('selectionchange', updatePillFromSelection);
+  document.addEventListener('mouseup', updatePillFromSelection, true);
+  document.addEventListener('keyup', (e)=>{ if (e.key === 'Shift') updatePillFromSelection(); });
+
   document.addEventListener('mousedown', e => { if (!pill.contains(e.target) && !editor.contains(e.target) && !pop.contains(e.target)) hide(pill); }, true);
   pillBtn.addEventListener('click', e => { e.preventDefault(); openEditorFromSelection(); });
 
@@ -315,7 +321,6 @@ Double Enter = new paragraph."></textarea>
     const cur = span.getAttribute('data-color');
     const hex = span.getAttribute('data-hex');
     popDots.forEach(c=>c.classList.toggle('active', c.dataset.c===cur));
-    // programmatic set; doesn't trigger change
     popPicker.value = hex ? hex : guessHexFromName(cur);
     popContent.innerHTML = mdToHtml(span.getAttribute('data-md') || '');
     const rect = span.getBoundingClientRect();
@@ -558,9 +563,6 @@ Double Enter = new paragraph."></textarea>
   hydrateOnce();
   setTimeout(hydrateOnce, 1000);
 
-  // ----- shared state for selection/editor -----
-  let pendingRange=null, pendingAnchor=null, edColor='yellow', edHex=null;
-
   // ---------- tiny helpers ----------
   function colors(){ return ['yellow','green','blue','pink','orange']; }
   function dot(c){ return `<span class="uw-color" data-c="${c}" title="${c}"></span>`; }
@@ -573,4 +575,3 @@ Double Enter = new paragraph."></textarea>
   function resolveXPath(x){ try{ return document.evaluate(x, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue||null; }catch{ return null; } }
   function anchorToRange(a){ const sc=resolveXPath(a.startXPath), ec=resolveXPath(a.endXPath); if(!sc||!ec) return null; try{ const r=document.createRange(); r.setStart(sc, Math.min(a.startOffset,(sc.nodeValue||'').length)); r.setEnd(ec, Math.min(a.endOffset,(ec.nodeValue||'').length)); return r.collapsed?null:r; }catch{ return null; } }
 })();
-
