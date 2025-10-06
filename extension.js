@@ -50,13 +50,18 @@
     .uw-customs{display:flex;gap:6px;align-items:center}
     .uw-clear{all:unset;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:6px;border:1px solid #ddd;background:#fafafa}
 
-    .uw-pop .uw-content{background:#fff;border:1px solid #eee;border-radius:8px;padding:8px;max-height:340px;overflow:auto;color:#222}
-    .uw-pop .uw-content,.uw-pop .uw-content p,.uw-pop .uw-content li{font-size:14px;line-height:1.45}
-    .uw-pop .uw-content p{margin:10px 0}
-    .uw-pop .uw-content ul{margin:2px 0;padding-left:18px}
-    .uw-pop .uw-content ul li{margin:0}
-    .uw-pop .uw-content p+ul{margin-top:10px !important}
-    .uw-pop .uw-content ul+p{margin-top:20px !important}
+    /* Inside the rendered note */
+    .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:340px; overflow:auto; color:#222; }
+    .uw-pop .uw-content, .uw-pop .uw-content p, .uw-pop .uw-content li { font-size:14px; line-height:1.45; }
+    
+    .uw-pop .uw-content p { margin:12px 0; }             /* normal paragraph gap */
+    .uw-pop .uw-content ul { margin:2px 0; padding-left:18px; } /* tight list body */
+    .uw-pop .uw-content ul li { margin:0; }
+    
+    /* cross-direction gaps */
+    .uw-pop .uw-content * + ul { margin-top:10px !important; }  /* paragraph → list */
+    .uw-pop .uw-content ul + * { margin-top:18px !important; }  /* list → paragraph/anything */
+    
     .uw-pop .uw-content code{background:#f6f6f6;padding:2px 4px;border-radius:4px}
     .uw-pop .uw-content pre{background:#f6f6f6;padding:8px;border-radius:6px;overflow:auto}
   `);
@@ -457,3 +462,4 @@ Double Enter = new paragraph."></textarea>
   hydrateOnce();
   setTimeout(hydrateOnce,1000);
 })();
+
