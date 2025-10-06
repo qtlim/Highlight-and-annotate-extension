@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v4.2.2 (Reliable Edit/Delete, Custom Swatch Delete, Better List Spacing)
+// @name         Persistent Highlighter + Notes — v4.3 (List gap after only; reliable edit/delete; custom colors)
 // @namespace    qt-highlighter
-// @version      4.2.2
-// @description  Select text → Add → Markdown note. Popover (edit, delete, pin, colors incl. picker & saved custom swatches). Persistent per page; SPA-safe.
+// @version      4.3.0
+// @description  Select text → Add note (Markdown). Persistent highlights. Popover to edit/delete/pin and change color (picker + saved swatches).
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
 // @run-at       document-end
@@ -50,19 +50,13 @@
     .uw-customs{display:flex;gap:6px;align-items:center}
     .uw-clear{all:unset;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:6px;border:1px solid #ddd;background:#fafafa}
 
-    /* Inside the rendered note */
-    .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:340px; overflow:auto; color:#222; }
-    .uw-pop .uw-content, .uw-pop .uw-content p, .uw-pop .uw-content li { font-size:14px; line-height:1.45; }
-    
-    .uw-pop .uw-content p { margin:12px 0; }             /* normal paragraph gap */
-    .uw-pop .uw-content ul { margin:2px 0; padding-left:18px; } /* tight list body */
-    .uw-pop .uw-content ul li { margin:0; }
-        
-    /* small/near-zero gap BEFORE a list */
-    .uw-pop .uw-content * + ul { margin-top: 2px !important; }
-    /* clear larger gap AFTER a list */
-    .uw-pop .uw-content ul + * { margin-top: 18px !important; }
-
+    .uw-pop .uw-content{background:#fff;border:1px solid #eee;border-radius:8px;padding:8px;max-height:340px;overflow:auto;color:#222}
+    .uw-pop .uw-content,.uw-pop .uw-content p,.uw-pop .uw-content li{font-size:14px;line-height:1.45}
+    .uw-pop .uw-content p{margin:12px 0}
+    .uw-pop .uw-content ul{margin:0;padding-left:18px}      /* no extra top-gap before lists */
+    .uw-pop .uw-content ul li{margin:0}
+    .uw-pop .uw-content * + ul{margin-top:2px !important;}  /* tiny gap BEFORE list */
+    .uw-pop .uw-content ul + *{margin-top:18px !important;} /* clear gap AFTER list */
     .uw-pop .uw-content code{background:#f6f6f6;padding:2px 4px;border-radius:4px}
     .uw-pop .uw-content pre{background:#f6f6f6;padding:8px;border-radius:6px;overflow:auto}
   `);
@@ -79,11 +73,9 @@
   const SWATCH_KEY='uw_custom_swatches';
   const GM_Get=(k,d)=>{ try{ return GM_getValue(k,d);}catch{return d;}};
   const GM_Set=(k,v)=>{ try{ GM_setValue(k,v);}catch{} };
-  const normHex = h => {
-    if(!h) return null; h=h.trim(); if(!h.startsWith('#')) h='#'+h;
+  const normHex = h => { if(!h) return null; h=h.trim(); if(!h.startsWith('#')) h='#'+h;
     if(/^#([a-f0-9]{3})$/i.test(h)) h='#'+h.slice(1).split('').map(c=>c+c).join('');
-    return /^#[a-f0-9]{6}$/i.test(h)?h.toLowerCase():null;
-  };
+    return /^#[a-f0-9]{6}$/i.test(h)?h.toLowerCase():null; };
   const uniq = a => { const s=new Set(),out=[]; for(const x of a||[]){ const h=normHex(x); if(h&&!s.has(h)){s.add(h);out.push(h);} } return out; };
   const loadSwatches = () => uniq(JSON.parse(GM_Get(SWATCH_KEY,'[]')));
   const saveSwatches = (arr)=> GM_Set(SWATCH_KEY, JSON.stringify(uniq(arr).slice(0,8)));
@@ -105,6 +97,7 @@
     md=md.replace(/```([\s\S]*?)```/g,(_,c)=>{ fences.push(c); return `\uE000${fences.length-1}\uE000`; });
     let t=esc(md);
 
+    // headings
     t=t.replace(/^###### (.+)$/gm,'<h6>$1</h6>')
        .replace(/^##### (.+)$/gm,'<h5>$1</h5>')
        .replace(/^#### (.+)$/gm,'<h4>$1</h4>')
@@ -112,6 +105,7 @@
        .replace(/^## (.+)$/gm,'<h2>$1</h2>')
        .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
 
+    // bullet groups
     const lines=t.split('\n'); let out=[],inList=false;
     for(const line of lines){
       if(/^\s*[-*]\s+/.test(line)){
@@ -119,7 +113,7 @@
         out.push('<li>'+line.replace(/^\s*[-*]\s+/,'')+'</li>');
       }else if(/^\s*$/.test(line)){
         if(inList){ out.push('</ul>'); inList=false; }
-        out.push(''); // keep empty line
+        out.push('');
       }else{
         if(inList){ out.push('</ul>'); inList=false; }
         out.push(line);
@@ -128,15 +122,10 @@
     if(inList) out.push('</ul>');
     t=out.join('\n');
 
-    // // guarantee a true paragraph break after any </ul> when followed by content
-    // t = t.replace(/<\/ul>\s*(?=\S)/g, '</ul>\n\n');
-
-    // guarantee a real paragraph break after any </ul>
+    // *** KEY FIX: ensure a real block break AFTER </ul> only ***
     t = t.replace(/<\/ul>\s*(?=\S)/g, '</ul>\n\n');
 
-    // // guarantee true paragraph break after UL
-    // t=t.replace(/<\/ul>\n(?!\n)/g,'</ul>\n\n');
-
+    // split on blank lines; wrap non-HTML in <p>
     const blocks=t.split(/\n{2,}/).map(b=>b.trim());
     t=blocks.map(b=>{
       if(!b) return '';
@@ -144,6 +133,7 @@
       return htmlStart?b:`<p>${b.replace(/\n/g,'<br>')}</p>`;
     }).join('');
 
+    // inline
     t=t.replace(/`([^`]+)`/g,'<code>$1</code>')
        .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
        .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g,'$1<em>$2</em>')
@@ -284,7 +274,7 @@ Double Enter = new paragraph."></textarea>
       hide(editor); hide(pill);
       const sel=getSelection(); sel && sel.removeAllRanges();
       pendingRange=null; pendingAnchor=null;
-      edSave.onclick=saveNew; // ensure default
+      edSave.onclick=saveNew;
     }
   }
 
@@ -309,7 +299,7 @@ Double Enter = new paragraph."></textarea>
   popPin.addEventListener('click',()=>{ isPinned=!isPinned; popPin.classList.toggle('active',isPinned); if(!isPinned) maybeHide(); });
   popClose.addEventListener('click',()=>{ isPinned=false; popPin.classList.remove('active'); hide(pop); });
 
-  // Edit → close popover, open editor, save reliably
+  // Edit
   popEdit.addEventListener('click',e=>{
     e.stopPropagation();
     if(!popSpan) return;
@@ -329,18 +319,15 @@ Double Enter = new paragraph."></textarea>
       try{
         const newColor = edHex ? edHex : edColor;
         const updated = updateByUid(rec.uid, r => ({...r, noteMd: edText.value||'', color:newColor}));
-        // reflect in DOM even if storage failed
         const span=document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`);
         if(span){ applyColor(span, newColor); span.setAttribute('data-md', edText.value||''); }
         if(newColor.startsWith && newColor.startsWith('#')) addSwatch(newColor);
       }catch(e){ /* ignore */ }
-      finally{
-        edSave.onclick=saveNew; hide(editor);
-      }
+      finally{ edSave.onclick=saveNew; hide(editor); }
     };
   });
 
-  // Delete — multiple fallbacks to avoid re-hydrate
+  // Delete (multi-fallback)
   popDel.addEventListener('click',e=>{
     e.stopPropagation();
     if(!popSpan) return;
@@ -352,13 +339,13 @@ Double Enter = new paragraph."></textarea>
       if(uidVal) ok = deleteByUid(uidVal);
       if(!ok){ const a=spanAnchorFromDataset(popSpan); if(a) ok = deleteByAnch(a); }
       if(!ok) ok = deleteByText(txt, col);
-      // unwrap DOM regardless so user sees it gone immediately
       const p=popSpan.parentNode; while(popSpan.firstChild) p.insertBefore(popSpan.firstChild, popSpan); p.removeChild(popSpan);
       hide(pop);
       if(ok) setTimeout(hydrateOnce,20);
     }catch(e){ hide(pop); }
   });
 
+  // Color changes
   popDots.forEach(s=>s.addEventListener('click',e=>{
     e.stopPropagation(); if(!popSpan) return;
     const c=s.dataset.c; popDots.forEach(x=>x.classList.toggle('active',x===s));
@@ -422,7 +409,7 @@ Double Enter = new paragraph."></textarea>
     }else{
       span.setAttribute('data-color',color||'yellow');
       span.removeAttribute('data-hex');
-      span.style.background=''; // CSS covers named colors
+      span.style.background=''; // CSS handles named colors
     }
   }
   function hexToRgba(hex,a){
@@ -469,6 +456,3 @@ Double Enter = new paragraph."></textarea>
   hydrateOnce();
   setTimeout(hydrateOnce,1000);
 })();
-
-
-
