@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v4.0 (List→Paragraph Gap + Saved Custom Swatches)
+// @name         Persistent Highlighter + Notes — v4.1 (Deduped Custom Swatches + Better List Spacing)
 // @namespace    qt-highlighter
-// @version      4.0.0
+// @version      4.1.0
 // @description  Select text → Add → Markdown note. Hover shows popover (edit, delete, pin, color incl. picker & saved custom swatches). Robust persistence (GM storage + XPath), SPA-safe.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
@@ -70,11 +70,11 @@
 
     .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:340px; overflow:auto; color:#222; }
     .uw-pop .uw-content, .uw-pop .uw-content p, .uw-pop .uw-content li { font-size:14px; line-height:1.45; }
-    .uw-pop .uw-content p { margin: 10px 0; }
-    .uw-pop .uw-content ul { margin: 4px 0; padding-left: 18px; }    /* tight list */
-    .uw-pop .uw-content ul + p { margin-top: 10px; }                  /* gap after a list → paragraph */
-    .uw-pop .uw-content p + ul { margin-top: 6px; }                   /* small gap paragraph → list */
+    .uw-pop .uw-content p { margin: 10px 0; }                     /* paragraph gap */
+    .uw-pop .uw-content ul { margin: 2px 0; padding-left:18px; }  /* tight list */
     .uw-pop .uw-content ul li { margin: 0; }
+    .uw-pop .uw-content p + ul { margin-top: 8px !important; }    /* paragraph → list */
+    .uw-pop .uw-content ul + p { margin-top: 14px !important; }   /* list → paragraph */
     .uw-pop .uw-content code { background:#f6f6f6; padding:2px 4px; border-radius:4px; }
     .uw-pop .uw-content pre { background:#f6f6f6; padding:8px; border-radius:6px; overflow:auto; }
   `);
@@ -87,15 +87,30 @@
   const load = () => { try { return JSON.parse(GM_getValue(pageKey(), '[]')); } catch { return []; } };
   const save = (arr) => GM_setValue(pageKey(), JSON.stringify(arr));
 
-  // persistent custom swatches
+  // persistent custom swatches (deduped)
   const SWATCH_KEY = 'uw_custom_swatches';
-  const loadSwatches = () => { try { return JSON.parse(GM_getValue(SWATCH_KEY, '[]')); } catch { return []; } };
-  const saveSwatches = (arr) => GM_setValue(SWATCH_KEY, JSON.stringify(arr.slice(0,8)));
+  function normalizeHex(h){
+    if (!h) return null;
+    h = h.trim();
+    if (!h.startsWith('#')) h = '#'+h;
+    if (/^#([a-f0-9]{3})$/i.test(h)) h = '#'+h.slice(1).split('').map(c=>c+c).join('');
+    return /^#[a-f0-9]{6}$/i.test(h) ? h.toLowerCase() : null;
+  }
+  function uniqueHexes(list){
+    const seen = new Set(); const out = [];
+    for (const x of list || []) {
+      const hx = normalizeHex(x);
+      if (hx && !seen.has(hx)) { seen.add(hx); out.push(hx); }
+    }
+    return out;
+  }
+  const loadSwatches = () => uniqueHexes( JSON.parse(GM_getValue(SWATCH_KEY, '[]')) );
+  const saveSwatches = (arr) => GM_setValue(SWATCH_KEY, JSON.stringify(uniqueHexes(arr).slice(0,8)));
   function addSwatch(hex){
-    hex = normalizeHex(hex);
-    if (!hex) return;
+    const hx = normalizeHex(hex);
+    if (!hx) return;
     const arr = loadSwatches();
-    if (!arr.includes(hex)) { arr.unshift(hex); saveSwatches(arr); renderCustoms(); }
+    if (!arr.includes(hx)) { arr.unshift(hx); saveSwatches(arr); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop); }
   }
 
   function updateByUid(uid, fn){ const arr=load(); const i=arr.findIndex(r=>r.uid===uid); if(i>=0){arr[i]=fn(arr[i])||arr[i]; save(arr); return arr[i];} return null; }
@@ -253,12 +268,13 @@ Double Enter = new paragraph."></textarea>
     edColor=s.dataset.c; edHex=null;
     edDots.forEach(x=>x.classList.toggle('active', x===s));
   }));
+  // Live preview on input; save swatch only on change
   edPicker.addEventListener('input', ()=>{
     edHex = edPicker.value; edColor='custom';
     edDots.forEach(x=>x.classList.remove('active'));
-    addSwatch(edHex);
-    // rebind clicks (new DOM)
-    renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop);
+  });
+  edPicker.addEventListener('change', ()=>{
+    if (edHex) addSwatch(edHex);
   });
   edCancel.addEventListener('click', ()=>{ hide(editor); });
   edSave.onclick = saveNew;
@@ -299,6 +315,7 @@ Double Enter = new paragraph."></textarea>
     const cur = span.getAttribute('data-color');
     const hex = span.getAttribute('data-hex');
     popDots.forEach(c=>c.classList.toggle('active', c.dataset.c===cur));
+    // programmatic set; doesn't trigger change
     popPicker.value = hex ? hex : guessHexFromName(cur);
     popContent.innerHTML = mdToHtml(span.getAttribute('data-md') || '');
     const rect = span.getBoundingClientRect();
@@ -349,7 +366,7 @@ Double Enter = new paragraph."></textarea>
         const span = document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`);
         if (span){ applyColor(span, updated.color); span.setAttribute('data-md', updated.noteMd); }
       }
-      if (newColor.startsWith && newColor.startsWith('#')) { addSwatch(newColor); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop); }
+      if (newColor.startsWith && newColor.startsWith('#')) { addSwatch(newColor); }
       edSave.onclick = saveNew; hide(editor);
     };
   });
@@ -372,7 +389,7 @@ Double Enter = new paragraph."></textarea>
     setTimeout(hydrateOnce, 20);
   });
 
-  // Swatches in popover
+  // Swatches in popover (named)
   popDots.forEach(s=>s.addEventListener('click',(e)=>{
     e.stopPropagation();
     if (!popSpan) return;
@@ -381,13 +398,18 @@ Double Enter = new paragraph."></textarea>
     const rec = getRecForSpan(popSpan);
     if (rec) updateByUid(rec.uid, r => ({...r, color:c}));
   }));
+  // Popover picker: live apply on input, save on change
   popPicker.addEventListener('input', (e)=>{
     if (!popSpan) return;
-    const hex = e.target.value; applyColor(popSpan, hex);
+    const hex = e.target.value;
+    applyColor(popSpan, hex);
     popDots.forEach(x=>x.classList.remove('active'));
     const rec = getRecForSpan(popSpan);
     if (rec) updateByUid(rec.uid, r => ({...r, color:hex}));
-    addSwatch(hex); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop);
+  });
+  popPicker.addEventListener('change', (e)=>{
+    const hex = e.target.value;
+    addSwatch(hex);
   });
 
   // ---------- HELPERS ----------
@@ -468,7 +490,7 @@ Double Enter = new paragraph."></textarea>
     } else {
       span.setAttribute('data-color', color || 'yellow');
       span.removeAttribute('data-hex');
-      span.style.background = ''; // CSS swatch takes over
+      span.style.background = ''; // CSS swatch for named colors
     }
   }
   function hexToRgba(hex, a){
@@ -477,7 +499,6 @@ Double Enter = new paragraph."></textarea>
     const r = parseInt(m[1],16), g = parseInt(m[2],16), b = parseInt(m[3],16);
     return `rgba(${r},${g},${b},${a==null?0.6:a})`;
   }
-  function normalizeHex(h){ if (!h) return null; h = h.trim(); if (!h.startsWith('#')) h = '#'+h; if (/^#([a-f0-9]{3})$/i.test(h)) h = '#'+h.slice(1).split('').map(c=>c+c).join(''); return /^#[a-f0-9]{6}$/i.test(h)?h:null; }
   function guessHexFromName(name){
     switch(name){
       case 'yellow': return '#ffe600';
@@ -536,4 +557,20 @@ Double Enter = new paragraph."></textarea>
   // ---------- BOOT ----------
   hydrateOnce();
   setTimeout(hydrateOnce, 1000);
+
+  // ----- shared state for selection/editor -----
+  let pendingRange=null, pendingAnchor=null, edColor='yellow', edHex=null;
+
+  // ---------- tiny helpers ----------
+  function colors(){ return ['yellow','green','blue','pink','orange']; }
+  function dot(c){ return `<span class="uw-color" data-c="${c}" title="${c}"></span>`; }
+  function div(cls, html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
+  function showAt(node,x,y){ node.style.left=Math.round(x)+'px'; node.style.top=Math.round(y)+'px'; node.style.display='block'; }
+  function hide(node){ node.style.display='none'; }
+  function uid(){ return 'u' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
+  function rangeToAnchor(r){ return { startXPath:getXPath(r.startContainer), startOffset:r.startOffset, endXPath:getXPath(r.endContainer), endOffset:r.endOffset }; }
+  function getXPath(node){ if (!node) return null; const parts=[]; while (node && node.nodeType!==Node.DOCUMENT_NODE){ let i=1,s=node.previousSibling; while(s){ if(s.nodeName===node.nodeName) i++; s=s.previousSibling; } parts.unshift(node.nodeType===Node.TEXT_NODE?`text()[${i}]`:`${node.nodeName.toLowerCase()}[${i}]`); node=node.parentNode; } return '/'+parts.join('/'); }
+  function resolveXPath(x){ try{ return document.evaluate(x, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue||null; }catch{ return null; } }
+  function anchorToRange(a){ const sc=resolveXPath(a.startXPath), ec=resolveXPath(a.endXPath); if(!sc||!ec) return null; try{ const r=document.createRange(); r.setStart(sc, Math.min(a.startOffset,(sc.nodeValue||'').length)); r.setEnd(ec, Math.min(a.endOffset,(ec.nodeValue||'').length)); return r.collapsed?null:r; }catch{ return null; } }
 })();
+
