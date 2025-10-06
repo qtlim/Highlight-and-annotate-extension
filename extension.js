@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v4.2.2 (Reliable selection pill + click/hover popover)
+// @name         Persistent Highlighter + Notes — v4.2.3 (reliable pill, list-after break, clickable color dots)
 // @namespace    qt-highlighter
-// @version      4.2.2
-// @description  Select text → Add → Markdown note. Hover OR click shows popover (edit, delete, pin, color incl. picker & saved custom swatches). Robust persistence (GM storage + XPath), SPA-safe.
+// @version      4.2.3
+// @description  Select text → Add → Markdown note. Hover/click shows popover (edit, delete, pin, color incl. picker & saved swatches). Persistent via GM storage + XPath.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
 // @run-at       document-end
@@ -35,7 +35,8 @@
     .uw-row{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}.uw-row .uw-spacer{flex:1}
     .uw-btn{all:unset;cursor:pointer;background:#2b6;color:#fff;padding:6px 10px;border-radius:8px;font-weight:700}.uw-btn.cancel{background:#888}
 
-    .uw-color{width:18px;height:18px;border-radius:50%;border:2px solid #0002;cursor:pointer}
+    /* <<< key fix: make dots always clickable >>> */
+    .uw-color{display:inline-block;width:20px;height:20px;border-radius:50%;border:2px solid #0002;cursor:pointer;box-sizing:content-box}
     .uw-color[data-c=yellow]{background:#ffe600}.uw-color[data-c=green]{background:#80e680}
     .uw-color[data-c=blue]{background:#8abaff}.uw-color[data-c=pink]{background:#ff8ad2}
     .uw-color[data-c=orange]{background:#ffc266}.uw-color.active{outline:2px solid #333}
@@ -96,6 +97,7 @@
                .replace(/^## (.+)$/gm,'<h2>$1</h2>')
                .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
 
+    // Build bullet groups; keep blank lines
     const lines = text.split('\n'); let out=[], inList=false;
     for(const line of lines){
       if(/^\s*[-*]\s+/.test(line)){
@@ -112,9 +114,13 @@
     if(inList) out.push('</ul>');
     text = out.join('\n');
 
-    // custom hard break token "~"
+    /* <<< key fixes for “line break after list” >>> */
+    // 1) Force a real block break whenever a list is followed by content
+    text = text.replace(/<\/ul>\s*(?=\S)/g, '</ul>\n\n');
+    // 2) Allow a single line containing only "~" to mean a hard paragraph gap
     text = text.replace(/(^|\n)~(\n|$)/g, '\n\n');
 
+    // Turn blocks into <p> unless already HTML
     const blocks = text.split(/\n{2,}/).map(b=>b.trim());
     text = blocks.map(b=>{
       if(!b) return '';
@@ -122,6 +128,7 @@
       return isHtml ? b : `<p>${b.replace(/\n/g,'<br>')}</p>`;
     }).join('');
 
+    // Inline
     text = text.replace(/`([^`]+)`/g,'<code>$1</code>')
                .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
                .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g,'$1<em>$2</em>')
@@ -142,7 +149,8 @@
 - bullet
 - bullet
 
-Double Enter = new paragraph."></textarea>
+Double Enter = new paragraph.
+Use a line with only ~ to force a gap."></textarea>
     <div class="uw-row">
       <span>Color:</span>
       ${colors().map(c=>dot(c)).join('')}
@@ -213,7 +221,7 @@ Double Enter = new paragraph."></textarea>
   }
   bindCustomClicks(editor); bindCustomClicks(pop);
 
-  /* ---------- Selection pill (more robust) ---------- */
+  /* ---------- Selection pill (robust) ---------- */
   function selectionRect(r){
     if(!r) return null;
     const rect=r.getBoundingClientRect();
@@ -296,7 +304,7 @@ Double Enter = new paragraph."></textarea>
   pop.addEventListener('mouseenter',clearHide);
   pop.addEventListener('mouseleave',()=>{ if(!isPinned) maybeHide(); });
 
-  // also open on click (more reliable on complex pages)
+  // also open on click (helps on complex pages)
   document.addEventListener('click',e=>{
     const s=e.target.closest('.uw-annot'); if(!s) return;
     e.preventDefault(); e.stopPropagation();
