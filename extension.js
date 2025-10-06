@@ -145,6 +145,10 @@
     if (inList) out.push('</ul>');
     text = out.join('\n');
 
+    // Custom hard-break token: a line with only "~" forces a paragraph break
+    // ...works even between a </ul> and the next paragraph.
+    t = t.replace(/(^|\n)~(\n|$)/g, '\n\n');
+    
     const blocks2 = text.split(/\n{2,}/).map(b => b.trim());
     const htmlBlocks = blocks2.map(b => {
       if (!b) return '';
@@ -575,3 +579,4 @@ Double Enter = new paragraph."></textarea>
   function resolveXPath(x){ try{ return document.evaluate(x, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue||null; }catch{ return null; } }
   function anchorToRange(a){ const sc=resolveXPath(a.startXPath), ec=resolveXPath(a.endXPath); if(!sc||!ec) return null; try{ const r=document.createRange(); r.setStart(sc, Math.min(a.startOffset,(sc.nodeValue||'').length)); r.setEnd(ec, Math.min(a.endOffset,(ec.nodeValue||'').length)); return r.collapsed?null:r; }catch{ return null; } }
 })();
+
