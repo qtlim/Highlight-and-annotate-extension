@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v4.3 (List gap after only; reliable edit/delete; custom colors)
+// @name         Persistent Highlighter + Notes — v4.3.1 (Correct list gaps; reliable edit/delete; custom colors)
 // @namespace    qt-highlighter
-// @version      4.3.0
+// @version      4.3.1
 // @description  Select text → Add note (Markdown). Persistent highlights. Popover to edit/delete/pin and change color (picker + saved swatches).
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
@@ -53,10 +53,10 @@
     .uw-pop .uw-content{background:#fff;border:1px solid #eee;border-radius:8px;padding:8px;max-height:340px;overflow:auto;color:#222}
     .uw-pop .uw-content,.uw-pop .uw-content p,.uw-pop .uw-content li{font-size:14px;line-height:1.45}
     .uw-pop .uw-content p{margin:12px 0}
-    .uw-pop .uw-content ul{margin:0;padding-left:18px}      /* no extra top-gap before lists */
+    .uw-pop .uw-content ul{margin:0;padding-left:18px}
     .uw-pop .uw-content ul li{margin:0}
-    .uw-pop .uw-content * + ul{margin-top:2px !important;}  /* tiny gap BEFORE list */
-    .uw-pop .uw-content ul + *{margin-top:18px !important;} /* clear gap AFTER list */
+    .uw-pop .uw-content * + ul{margin-top:2px !important;}   /* almost no gap BEFORE a list */
+    .uw-pop .uw-content ul + *{margin-top:18px !important;}  /* clear gap AFTER a list */
     .uw-pop .uw-content code{background:#f6f6f6;padding:2px 4px;border-radius:4px}
     .uw-pop .uw-content pre{background:#f6f6f6;padding:8px;border-radius:6px;overflow:auto}
   `);
@@ -89,59 +89,54 @@
   const deleteByAnch = anc  => { const a=load(); const i=a.findIndex(r=>r.startXPath===anc.startXPath&&r.startOffset===anc.startOffset&&r.endXPath===anc.endXPath&&r.endOffset===anc.endOffset); if(i>=0){ a.splice(i,1); save(a); return true;} return false; };
   const deleteByText = (txt,color)=>{ const a=load(); const n=a.filter(r=>!(r.exact===txt && r.color===color)); if(n.length!==a.length){ save(n); return true; } return false; };
 
-  /*************** MARKDOWN ***************/
+  /*************** MARKDOWN (fixed) ***************/
   const esc = s=>s.replace(/[&<>"]/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m]));
   function mdToHtml(md){
     if(!md) return '';
+    // fence code first
     const fences=[];
     md=md.replace(/```([\s\S]*?)```/g,(_,c)=>{ fences.push(c); return `\uE000${fences.length-1}\uE000`; });
-    let t=esc(md);
+    const L = esc(md).split('\n');
 
-    // headings
-    t=t.replace(/^###### (.+)$/gm,'<h6>$1</h6>')
-       .replace(/^##### (.+)$/gm,'<h5>$1</h5>')
-       .replace(/^#### (.+)$/gm,'<h4>$1</h4>')
-       .replace(/^### (.+)$/gm,'<h3>$1</h3>')
-       .replace(/^## (.+)$/gm,'<h2>$1</h2>')
-       .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
+    let html='', inList=false, para=[];
+    const flushPara = ()=>{
+      if(para.length){ html += `<p>${para.join('<br>')}</p>`; para=[]; }
+    };
+    const flushList = ()=>{
+      if(inList){ html += '</ul>'; inList=false; }
+    };
 
-    // bullet groups
-    const lines=t.split('\n'); let out=[],inList=false;
-    for(const line of lines){
-      if(/^\s*[-*]\s+/.test(line)){
-        if(!inList){ out.push('<ul>'); inList=true; }
-        out.push('<li>'+line.replace(/^\s*[-*]\s+/,'')+'</li>');
-      }else if(/^\s*$/.test(line)){
-        if(inList){ out.push('</ul>'); inList=false; }
-        out.push('');
-      }else{
-        if(inList){ out.push('</ul>'); inList=false; }
-        out.push(line);
+    for(let raw of L){
+      const line = raw;
+      if(/^\s*[-*]\s+/.test(line)){               // list item
+        flushPara();
+        if(!inList){ html += '<ul>'; inList=true; }
+        html += `<li>${line.replace(/^\s*[-*]\s+/,'')}</li>`;
+      } else if(/^\s*$/.test(line)){              // blank line
+        flushList(); flushPara();
+      } else if(/^#{1,6}\s+/.test(line)){         // heading (simple)
+        flushList(); flushPara();
+        const m=line.match(/^(#{1,6})\s+(.*)$/); const lvl=m[1].length, txt=m[2];
+        html += `<h${lvl} style="${lvl===1?'font-size:1.15em;margin:4px 0;':''}">${txt}</h${lvl}>`;
+      } else {                                    // paragraph text
+        flushList();
+        para.push(line);
       }
     }
-    if(inList) out.push('</ul>');
-    t=out.join('\n');
+    flushList(); flushPara();
 
-    // *** KEY FIX: ensure a real block break AFTER </ul> only ***
-    t = t.replace(/<\/ul>\s*(?=\S)/g, '</ul>\n\n');
+    // restore fenced code
+    html = html.replace(/\uE000(\d+)\uE000/g,(_,i)=>`<pre><code>${esc(fences[+i])}</code></pre>`);
 
-    // split on blank lines; wrap non-HTML in <p>
-    const blocks=t.split(/\n{2,}/).map(b=>b.trim());
-    t=blocks.map(b=>{
-      if(!b) return '';
-      const htmlStart=/^(<ul>|<h[1-6]\b|<pre\b|<\/ul>)/.test(b)||b.includes('<li>');
-      return htmlStart?b:`<p>${b.replace(/\n/g,'<br>')}</p>`;
-    }).join('');
+    // inline styles
+    html = html.replace(/`([^`]+)`/g,'<code>$1</code>')
+               .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g,'$1<em>$2</em>');
 
-    // inline
-    t=t.replace(/`([^`]+)`/g,'<code>$1</code>')
-       .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
-       .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g,'$1<em>$2</em>')
-       .replace(/\uE000(\d+)\uE000/g,(_,i)=>`<pre><code>${esc(fences[+i])}</code></pre>`);
-    return t;
+    return html;
   }
 
-  /*************** UI ***************/
+  /*************** UI (unchanged core) ***************/
   let pendingRange=null, pendingAnchor=null, edColor='yellow', edHex=null;
 
   const pill = el('div','uw-pill',`Annotate <button>Add</button>`); document.documentElement.appendChild(pill);
@@ -205,7 +200,6 @@ Double Enter = new paragraph."></textarea>
   const popPin=pop.querySelector('.uw-pin');
   let popSpan=null, isPinned=false, hideTimer=null;
 
-  // swatches render + bind
   function renderCustoms(){
     const sw=loadSwatches();
     const mk=h=>`<span class="uw-color uw-custom" data-hex="${h}" title="${h} (right-click to remove)" style="background:${h};"></span>`;
@@ -213,7 +207,6 @@ Double Enter = new paragraph."></textarea>
     popCustoms.innerHTML=sw.map(mk).join('');
   }
   renderCustoms();
-
   function bindCustomClicks(scope){
     scope.querySelectorAll('.uw-custom').forEach(elm=>{
       elm.onclick=e=>{
@@ -279,6 +272,7 @@ Double Enter = new paragraph."></textarea>
   }
 
   /*************** POPOVER ***************/
+  const pop = document.querySelector('.uw-pop');
   function showPopoverFor(span){
     popSpan=span;
     const cur=span.getAttribute('data-color');
@@ -289,6 +283,7 @@ Double Enter = new paragraph."></textarea>
     const rect=span.getBoundingClientRect();
     showAt(pop, rect.left+window.scrollX, rect.bottom+window.scrollY+6);
   }
+  let isPinned=false, hideTimer=null;
   function clearHide(){ if(hideTimer){clearTimeout(hideTimer); hideTimer=null;} }
   function maybeHide(){ if(isPinned) return; if(!pop.matches(':hover') && !(popSpan && popSpan.matches(':hover'))) hide(pop); }
 
@@ -296,10 +291,19 @@ Double Enter = new paragraph."></textarea>
   document.addEventListener('mouseout',e=>{ if(!e.target.closest('.uw-annot')||isPinned) return; clearHide(); hideTimer=setTimeout(maybeHide,220); },true);
   pop.addEventListener('mouseenter',clearHide);
   pop.addEventListener('mouseleave',()=>{ if(!isPinned) maybeHide(); });
+
+  const popEdit=pop.querySelector('.uw-edit');
+  const popDel=pop.querySelector('.uw-del');
+  const popClose=pop.querySelector('.uw-close');
+  const popPin=pop.querySelector('.uw-pin');
+  const popDots=[...pop.querySelectorAll('.uw-color')];
+  const popPicker=pop.querySelector('.uw-picker');
+  const popCustoms=pop.querySelector('.uw-pop-customs');
+  const popClear=pop.querySelector('.uw-clear');
+
   popPin.addEventListener('click',()=>{ isPinned=!isPinned; popPin.classList.toggle('active',isPinned); if(!isPinned) maybeHide(); });
   popClose.addEventListener('click',()=>{ isPinned=false; popPin.classList.remove('active'); hide(pop); });
 
-  // Edit
   popEdit.addEventListener('click',e=>{
     e.stopPropagation();
     if(!popSpan) return;
@@ -318,7 +322,7 @@ Double Enter = new paragraph."></textarea>
     edSave.onclick = ()=>{
       try{
         const newColor = edHex ? edHex : edColor;
-        const updated = updateByUid(rec.uid, r => ({...r, noteMd: edText.value||'', color:newColor}));
+        updateByUid(rec.uid, r => ({...r, noteMd: edText.value||'', color:newColor}));
         const span=document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`);
         if(span){ applyColor(span, newColor); span.setAttribute('data-md', edText.value||''); }
         if(newColor.startsWith && newColor.startsWith('#')) addSwatch(newColor);
@@ -327,7 +331,6 @@ Double Enter = new paragraph."></textarea>
     };
   });
 
-  // Delete (multi-fallback)
   popDel.addEventListener('click',e=>{
     e.stopPropagation();
     if(!popSpan) return;
@@ -345,7 +348,6 @@ Double Enter = new paragraph."></textarea>
     }catch(e){ hide(pop); }
   });
 
-  // Color changes
   popDots.forEach(s=>s.addEventListener('click',e=>{
     e.stopPropagation(); if(!popSpan) return;
     const c=s.dataset.c; popDots.forEach(x=>x.classList.toggle('active',x===s));
@@ -409,7 +411,7 @@ Double Enter = new paragraph."></textarea>
     }else{
       span.setAttribute('data-color',color||'yellow');
       span.removeAttribute('data-hex');
-      span.style.background=''; // CSS handles named colors
+      span.style.background='';
     }
   }
   function hexToRgba(hex,a){
