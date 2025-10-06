@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v4.2.3 (reliable pill, list-after break, clickable color dots)
+// @name         Persistent Highlighter + Notes — v4.2.4 (no auto-pin, solid Edit, list-after break + "~" gap)
 // @namespace    qt-highlighter
-// @version      4.2.3
-// @description  Select text → Add → Markdown note. Hover/click shows popover (edit, delete, pin, color incl. picker & saved swatches). Persistent via GM storage + XPath.
+// @version      4.2.4
+// @description  Select text → Add note (Markdown). Hover/click shows popover (edit, delete, pin, color & picker). Persistent via GM storage + XPath.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
 // @run-at       document-end
@@ -17,15 +17,15 @@
   'use strict';
   if (location.href.startsWith('about:') || location.host.includes('addons.mozilla.org')) return;
 
-  /* -------------------- STYLE -------------------- */
+  /* ============ STYLE ============ */
   GM_addStyle(`
-    .uw-annot { padding:0 1px; border-radius:2px; cursor:help; }
-    .uw-annot[data-color="yellow"] { background: rgba(255,230,0,.65); }
-    .uw-annot[data-color="green"]  { background: rgba(160,255,160,.55); }
-    .uw-annot[data-color="blue"]   { background: rgba(160,200,255,.55); }
-    .uw-annot[data-color="pink"]   { background: rgba(255,160,220,.55); }
-    .uw-annot[data-color="orange"] { background: rgba(255,200,120,.55); }
-    .uw-annot:hover { outline: 1px solid rgba(0,0,0,.25); }
+    .uw-annot{padding:0 1px;border-radius:2px;cursor:help}
+    .uw-annot[data-color=yellow]{background:rgba(255,230,0,.65)}
+    .uw-annot[data-color=green]{background:rgba(160,255,160,.55)}
+    .uw-annot[data-color=blue]{background:rgba(160,200,255,.55)}
+    .uw-annot[data-color=pink]{background:rgba(255,160,220,.55)}
+    .uw-annot[data-color=orange]{background:rgba(255,200,120,.55)}
+    .uw-annot:hover{outline:1px solid rgba(0,0,0,.25)}
 
     .uw-pill{position:absolute;z-index:2147483647;display:none;background:#fff;color:#111;border:1px solid #ddd;border-radius:999px;padding:6px 10px;font:12px/1 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.1);user-select:none}
     .uw-pill button{all:unset;cursor:pointer;background:#ffd400;color:#111;padding:4px 8px;border-radius:999px;font-weight:700;margin-left:8px}
@@ -35,7 +35,7 @@
     .uw-row{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}.uw-row .uw-spacer{flex:1}
     .uw-btn{all:unset;cursor:pointer;background:#2b6;color:#fff;padding:6px 10px;border-radius:8px;font-weight:700}.uw-btn.cancel{background:#888}
 
-    /* <<< key fix: make dots always clickable >>> */
+    /* make color dots easy to click */
     .uw-color{display:inline-block;width:20px;height:20px;border-radius:50%;border:2px solid #0002;cursor:pointer;box-sizing:content-box}
     .uw-color[data-c=yellow]{background:#ffe600}.uw-color[data-c=green]{background:#80e680}
     .uw-color[data-c=blue]{background:#8abaff}.uw-color[data-c=pink]{background:#ff8ad2}
@@ -61,7 +61,7 @@
     .uw-pop .uw-content pre{background:#f6f6f6;padding:8px;border-radius:6px;overflow:auto}
   `);
 
-  /* -------------------- STORAGE -------------------- */
+  /* ============ STORAGE ============ */
   function pageKey(){
     try{ const u=new URL(window.top.location.href); return `uw_annots::${u.origin}${u.pathname}`; }
     catch{ const u=new URL(location.href); return `uw_annots::${u.origin}${u.pathname}`; }
@@ -70,35 +70,33 @@
   const save = (arr) => GM_setValue(pageKey(), JSON.stringify(arr));
 
   const SWATCH_KEY='uw_custom_swatches';
-  const normalizeHex = h => { if(!h) return null; h=h.trim(); if(!h.startsWith('#')) h='#'+h;
-    if(/^#([a-f0-9]{3})$/i.test(h)) h='#'+h.slice(1).split('').map(c=>c+c).join('');
-    return /^#[a-f0-9]{6}$/i.test(h)?h.toLowerCase():null; };
-  const uniqueHexes = list => { const s=new Set(), out=[]; for(const x of list||[]){ const hx=normalizeHex(x); if(hx&&!s.has(hx)){ s.add(hx); out.push(hx); } } return out; };
-  const loadSwatches = () => uniqueHexes(JSON.parse(GM_getValue(SWATCH_KEY,'[]')));
-  const saveSwatches = arr => GM_setValue(SWATCH_KEY, JSON.stringify(uniqueHexes(arr).slice(0,8)));
-  function addSwatch(hex){ const hx=normalizeHex(hex); if(!hx) return; const a=loadSwatches(); if(!a.includes(hx)){ a.unshift(hx); saveSwatches(a); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop); } }
+  const normHex=h=>{ if(!h) return null; h=h.trim(); if(!h.startsWith('#')) h='#'+h; if(/^#([a-f0-9]{3})$/i.test(h)) h='#'+h.slice(1).split('').map(c=>c+c).join(''); return /^#[a-f0-9]{6}$/i.test(h)?h.toLowerCase():null; };
+  const uniqHex=list=>{ const s=new Set(),out=[]; for(const x of list||[]){ const hx=normHex(x); if(hx&&!s.has(hx)){s.add(hx); out.push(hx);} } return out; };
+  const loadSwatches=()=>uniqHex(JSON.parse(GM_getValue(SWATCH_KEY,'[]')));
+  const saveSwatches=a=>GM_setValue(SWATCH_KEY, JSON.stringify(uniqHex(a).slice(0,8)));
+  function addSwatch(hex){ const h=normHex(hex); if(!h) return; const a=loadSwatches(); if(!a.includes(h)){a.unshift(h); saveSwatches(a); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop);} }
 
   const updateByUid=(uid,fn)=>{ const a=load(); const i=a.findIndex(r=>r.uid===uid); if(i>=0){ a[i]=fn(a[i])||a[i]; save(a); return a[i]; } return null; };
-  const deleteByUid = uid => { const a=load(); const i=a.findIndex(r=>r.uid===uid); if(i>=0){ a.splice(i,1); save(a); return true; } return false; };
-  const deleteByAnchor = anc => { const a=load(); const i=a.findIndex(r=>r.startXPath===anc.startXPath&&r.startOffset===anc.startOffset&&r.endXPath===anc.endXPath&&r.endOffset===anc.endOffset); if(i>=0){ a.splice(i,1); save(a); return true; } return false; };
+  const deleteByUid=uid=>{ const a=load(); const i=a.findIndex(r=>r.uid===uid); if(i>=0){ a.splice(i,1); save(a); return true;} return false; };
+  const deleteByAnchor=a=>{ const arr=load(); const i=arr.findIndex(r=>r.startXPath===a.startXPath&&r.startOffset===a.startOffset&&r.endXPath===a.endXPath&&r.endOffset===a.endOffset); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; };
 
-  /* -------------------- MARKDOWN -------------------- */
-  const esc = s=>s.replace(/[&<>"]/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m]));
+  /* ============ MARKDOWN ============ */
+  const esc=s=>s.replace(/[&<>"]/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m]));
   function mdToHtml(md){
     if(!md) return '';
     const fences=[];
-    md = md.replace(/```([\s\S]*?)```/g,(_,code)=>{ fences.push(code); return `\uE000${fences.length-1}\uE000`; });
-    let text = esc(md);
+    md=md.replace(/```([\s\S]*?)```/g,(_,c)=>{ fences.push(c); return `\uE000${fences.length-1}\uE000`; });
+    let text=esc(md);
 
-    text = text.replace(/^###### (.+)$/gm,'<h6>$1</h6>')
-               .replace(/^##### (.+)$/gm,'<h5>$1</h5>')
-               .replace(/^#### (.+)$/gm,'<h4>$1</h4>')
-               .replace(/^### (.+)$/gm,'<h3>$1</h3>')
-               .replace(/^## (.+)$/gm,'<h2>$1</h2>')
-               .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
+    text=text.replace(/^###### (.+)$/gm,'<h6>$1</h6>')
+             .replace(/^##### (.+)$/gm,'<h5>$1</h5>')
+             .replace(/^#### (.+)$/gm,'<h4>$1</h4>')
+             .replace(/^### (.+)$/gm,'<h3>$1</h3>')
+             .replace(/^## (.+)$/gm,'<h2>$1</h2>')
+             .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
 
-    // Build bullet groups; keep blank lines
-    const lines = text.split('\n'); let out=[], inList=false;
+    // Make <ul> groups (keeping blank lines)
+    const lines=text.split('\n'); let out=[], inList=false;
     for(const line of lines){
       if(/^\s*[-*]\s+/.test(line)){
         if(!inList){ out.push('<ul>'); inList=true; }
@@ -114,17 +112,16 @@
     if(inList) out.push('</ul>');
     text = out.join('\n');
 
-    /* <<< key fixes for “line break after list” >>> */
-    // 1) Force a real block break whenever a list is followed by content
+    // Force a break AFTER any list followed by content
     text = text.replace(/<\/ul>\s*(?=\S)/g, '</ul>\n\n');
-    // 2) Allow a single line containing only "~" to mean a hard paragraph gap
-    text = text.replace(/(^|\n)~(\n|$)/g, '\n\n');
+    // "~" on its own line (with optional spaces) = paragraph gap
+    text = text.replace(/(^|\n)\s*~\s*(?=\n|$)/g, '\n\n');
 
-    // Turn blocks into <p> unless already HTML
-    const blocks = text.split(/\n{2,}/).map(b=>b.trim());
+    // Wrap non-HTML blocks in <p>
+    const blocks=text.split(/\n{2,}/).map(b=>b.trim());
     text = blocks.map(b=>{
       if(!b) return '';
-      const isHtml = /^(<ul>|<h[1-6]\b|<pre\b|<\/ul>)/.test(b) || b.includes('<li>');
+      const isHtml=/^(<ul>|<h[1-6]\b|<pre\b|<\/ul>)/.test(b)||b.includes('<li>');
       return isHtml ? b : `<p>${b.replace(/\n/g,'<br>')}</p>`;
     }).join('');
 
@@ -136,7 +133,7 @@
     return text;
   }
 
-  /* -------------------- UI -------------------- */
+  /* ============ UI ============ */
   let pendingRange=null, pendingAnchor=null, edColor='yellow', edHex=null;
 
   const pill = div('uw-pill',`Annotate <button>Add</button>`); document.documentElement.appendChild(pill);
@@ -150,7 +147,7 @@
 - bullet
 
 Double Enter = new paragraph.
-Use a line with only ~ to force a gap."></textarea>
+Or put a line with only ~ to force a blank gap."></textarea>
     <div class="uw-row">
       <span>Color:</span>
       ${colors().map(c=>dot(c)).join('')}
@@ -197,6 +194,7 @@ Use a line with only ~ to force a gap."></textarea>
   const popPin=pop.querySelector('.uw-pin');
   let popSpan=null, isPinned=false, hideTimer=null;
 
+  /* saved swatches in both places */
   function renderCustoms(){
     const sw=loadSwatches();
     const mk=hex=>`<span class="uw-color uw-custom" data-hex="${hex}" title="${hex}" style="background:${hex};"></span>`;
@@ -204,28 +202,22 @@ Use a line with only ~ to force a gap."></textarea>
     popCustoms.innerHTML=sw.map(mk).join('');
   }
   renderCustoms();
-
   function bindCustomClicks(scope){
     scope.querySelectorAll('.uw-custom').forEach(el=>{
-      el.onclick = e => {
+      el.onclick=e=>{
         const hex=e.currentTarget.getAttribute('data-hex'); if(!hex) return;
-        if(scope===editor){
-          edHex=hex; edColor='custom'; edPicker.value=hex; edDots.forEach(x=>x.classList.remove('active'));
-        }else{
-          if(!popSpan) return;
-          applyColor(popSpan,hex); popDots.forEach(x=>x.classList.remove('active'));
-          const rec=getRecForSpan(popSpan); if(rec) updateByUid(rec.uid,r=>({...r,color:hex}));
-        }
+        if(scope===editor){ edHex=hex; edColor='custom'; edPicker.value=hex; edDots.forEach(x=>x.classList.remove('active')); }
+        else { if(!popSpan) return; applyColor(popSpan,hex); popDots.forEach(x=>x.classList.remove('active')); const rec=getRecForSpan(popSpan); if(rec) updateByUid(rec.uid,r=>({...r,color:hex})); }
       };
     });
   }
   bindCustomClicks(editor); bindCustomClicks(pop);
 
-  /* ---------- Selection pill (robust) ---------- */
+  /* ---- Selection pill (robust) ---- */
   function selectionRect(r){
     if(!r) return null;
     const rect=r.getBoundingClientRect();
-    if(rect && (rect.width || rect.height)) return rect;
+    if(rect && (rect.width||rect.height)) return rect;
     const list=r.getClientRects?.();
     return (list && list.length)? list[0] : null;
   }
@@ -237,34 +229,32 @@ Use a line with only ~ to force a gap."></textarea>
   }
   function showPillFromSelection(){
     try{
-      const sel=getSelection(); if(!sel || sel.rangeCount===0 || sel.isCollapsed) return hide(pill);
-      const r=sel.getRangeAt(0); if(!r || shouldIgnoreRange(r)) return hide(pill);
+      const sel=getSelection(); if(!sel||sel.rangeCount===0||sel.isCollapsed) return hide(pill);
+      const r=sel.getRangeAt(0); if(!r||shouldIgnoreRange(r)) return hide(pill);
       const rc=selectionRect(r); if(!rc) return hide(pill);
       showAt(pill, rc.right+window.scrollX+8, rc.top+window.scrollY-8);
     }catch{ hide(pill); }
   }
-  const delayedShow = () => setTimeout(showPillFromSelection, 0);
-
-  document.addEventListener('selectionchange', delayedShow, true);
-  document.addEventListener('mouseup', delayedShow, true);
-  document.addEventListener('pointerup', delayedShow, true);
-  document.addEventListener('keyup', e=>{ if(e.key==='Shift' || e.key==='ArrowLeft' || e.key==='ArrowRight') delayedShow(); }, true);
-
-  document.addEventListener('mousedown', e=>{ if(!pill.contains(e.target)&&!editor.contains(e.target)&&!pop.contains(e.target)) hide(pill); }, true);
-  pillBtn.addEventListener('click', e=>{ e.preventDefault(); openEditorFromSelection(); });
+  const delayedShow=()=>setTimeout(showPillFromSelection,0);
+  document.addEventListener('selectionchange',delayedShow,true);
+  document.addEventListener('mouseup',delayedShow,true);
+  document.addEventListener('pointerup',delayedShow,true);
+  document.addEventListener('keyup',e=>{ if(e.key==='Shift'||e.key==='ArrowLeft'||e.key==='ArrowRight') delayedShow(); },true);
+  document.addEventListener('mousedown',e=>{ if(!pill.contains(e.target)&&!editor.contains(e.target)&&!pop.contains(e.target)) hide(pill); },true);
+  pillBtn.addEventListener('click',e=>{ e.preventDefault(); openEditorFromSelection(); });
 
   function openEditorFromSelection(){
     const sel=getSelection(); if(!sel||sel.rangeCount===0) return;
     const r=sel.getRangeAt(0); if(r.collapsed) return;
     pendingRange=r.cloneRange(); pendingAnchor=rangeToAnchor(pendingRange);
     edText.value=''; edColor='yellow'; edHex=null; edPicker.value='#ffe600';
-    edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
+    edDots.forEach(x=>x.classList.toggle('active',x.dataset.c===edColor));
     const rc=selectionRect(r); if(!rc) return;
     showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+10); edText.focus();
   }
 
-  /* ---------- Editor ---------- */
-  edDots.forEach(s=>s.addEventListener('click',()=>{ edColor=s.dataset.c; edHex=null; edDots.forEach(x=>x.classList.toggle('active', x===s)); }));
+  /* ---- Editor ---- */
+  edDots.forEach(s=>s.addEventListener('click',()=>{ edColor=s.dataset.c; edHex=null; edDots.forEach(x=>x.classList.toggle('active',x===s)); }));
   edPicker.addEventListener('input',()=>{ edHex=edPicker.value; edColor='custom'; edDots.forEach(x=>x.classList.remove('active')); });
   edPicker.addEventListener('change',()=>{ if(edHex) addSwatch(edHex); });
   edCancel.addEventListener('click',()=> hide(editor));
@@ -275,8 +265,7 @@ Use a line with only ~ to force a gap."></textarea>
     const colorVal=edHex?edHex:edColor;
     const rec={ uid:uid(), noteMd:edText.value||'', color:colorVal, ts:Date.now(),
       startXPath:pendingAnchor.startXPath, startOffset:pendingAnchor.startOffset,
-      endXPath:pendingAnchor.endXPath, endOffset:pendingAnchor.endOffset,
-      exact:pendingRange.toString() };
+      endXPath:pendingAnchor.endXPath, endOffset:pendingAnchor.endOffset, exact:pendingRange.toString() };
     const arr=load(); arr.push(rec); save(arr);
     if(colorVal.startsWith && colorVal.startsWith('#')) addSwatch(colorVal);
     wrapRange(pendingRange,rec);
@@ -285,7 +274,7 @@ Use a line with only ~ to force a gap."></textarea>
     pendingRange=null; pendingAnchor=null;
   }
 
-  /* ---------- Popover (hover + click) ---------- */
+  /* ---- Popover (hover only; no auto-pin on click) ---- */
   function showPopoverFor(span){
     popSpan=span;
     const cur=span.getAttribute('data-color');
@@ -298,46 +287,41 @@ Use a line with only ~ to force a gap."></textarea>
   }
   function clearHide(){ if(hideTimer){clearTimeout(hideTimer); hideTimer=null;} }
   function maybeHide(){ if(isPinned) return; if(!pop.matches(':hover') && !(popSpan && popSpan.matches(':hover'))) hide(pop); }
-
   document.addEventListener('mouseover',e=>{ const s=e.target.closest('.uw-annot'); if(!s) return; clearHide(); showPopoverFor(s); },true);
-  document.addEventListener('mouseout',e=>{ if(!e.target.closest('.uw-annot') || isPinned) return; clearHide(); hideTimer=setTimeout(maybeHide,220); },true);
+  document.addEventListener('mouseout',e=>{ if(!e.target.closest('.uw-annot')||isPinned) return; clearHide(); hideTimer=setTimeout(maybeHide,220); },true);
   pop.addEventListener('mouseenter',clearHide);
   pop.addEventListener('mouseleave',()=>{ if(!isPinned) maybeHide(); });
-
-  // also open on click (helps on complex pages)
-  document.addEventListener('click',e=>{
-    const s=e.target.closest('.uw-annot'); if(!s) return;
-    e.preventDefault(); e.stopPropagation();
-    clearHide(); showPopoverFor(s); isPinned=true; popPin.classList.add('active');
-  },true);
-
   popPin.addEventListener('click',()=>{ isPinned=!isPinned; popPin.classList.toggle('active',isPinned); if(!isPinned) maybeHide(); });
   popClose.addEventListener('click',()=>{ isPinned=false; popPin.classList.remove('active'); hide(pop); });
 
+  // EDIT — ensure popover doesn’t hide before we open the editor
   popEdit.addEventListener('click',e=>{
-    e.stopPropagation(); if(!popSpan) return;
+    e.stopPropagation(); clearHide();
+    if(!popSpan) return;
     const rec=getRecForSpan(popSpan); if(!rec) return;
     isPinned=false; popPin.classList.remove('active'); hide(pop);
 
     edText.value=rec.noteMd||'';
     if(rec.color && rec.color.startsWith('#')){ edHex=rec.color; edColor='custom'; edPicker.value=rec.color; addSwatch(rec.color); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop); }
-    else { edHex=null; edColor=rec.color||'yellow'; edPicker.value=guessHexFromName(edColor); }
-    edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
+    else{ edHex=null; edColor=rec.color||'yellow'; edPicker.value=guessHexFromName(edColor); }
+    edDots.forEach(x=>x.classList.toggle('active',x.dataset.c===edColor));
 
     const rect=popSpan.getBoundingClientRect();
     showAt(editor, rect.left+window.scrollX, rect.bottom+window.scrollY+10); edText.focus();
 
     edSave.onclick=()=>{
       const newColor=edHex?edHex:edColor;
-      const updated=updateByUid(rec.uid, r=>({...r, noteMd:edText.value||'', color:newColor}));
-      if(updated){ const sp=document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`); if(sp){ applyColor(sp,updated.color); sp.setAttribute('data-md', updated.noteMd); } }
+      const updated=updateByUid(rec.uid,r=>({...r,noteMd:edText.value||'',color:newColor}));
+      if(updated){ const span=document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`); if(span){ applyColor(span,updated.color); span.setAttribute('data-md',updated.noteMd); } }
       if(newColor.startsWith && newColor.startsWith('#')) addSwatch(newColor);
       edSave.onclick=saveNew; hide(editor);
     };
   });
 
+  // DELETE
   popDel.addEventListener('click',e=>{
-    e.stopPropagation(); if(!popSpan) return;
+    e.stopPropagation();
+    if(!popSpan) return;
     const uidVal=popSpan.getAttribute('data-uid');
     let removed=false;
     if(uidVal) removed=deleteByUid(uidVal);
@@ -346,9 +330,10 @@ Use a line with only ~ to force a gap."></textarea>
     hide(pop); setTimeout(hydrateOnce,20);
   });
 
+  // color changes
   popDots.forEach(s=>s.addEventListener('click',e=>{
     e.stopPropagation(); if(!popSpan) return;
-    const c=s.dataset.c; popDots.forEach(x=>x.classList.toggle('active', x===s));
+    const c=s.dataset.c; popDots.forEach(x=>x.classList.toggle('active',x===s));
     applyColor(popSpan,c);
     const rec=getRecForSpan(popSpan); if(rec) updateByUid(rec.uid,r=>({...r,color:c}));
   }));
@@ -358,7 +343,7 @@ Use a line with only ~ to force a gap."></textarea>
   });
   popPicker.addEventListener('change',e=> addSwatch(e.target.value));
 
-  /* -------------------- HELPERS -------------------- */
+  /* ============ HELPERS ============ */
   function div(cls,html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
   function colors(){ return ['yellow','green','blue','pink','orange']; }
   function dot(c){ return `<span class="uw-color" data-c="${c}" title="${c}"></span>`; }
@@ -398,13 +383,13 @@ Use a line with only ~ to force a gap."></textarea>
     catch{ const tmp=document.createElement('span'); tmp.textContent=range.toString(); span.appendChild(tmp); range.deleteContents(); range.insertNode(span); }
   }
   function applyColor(span,color){
-    if(color && color.startsWith && color.startsWith('#')){ span.setAttribute('data-color','custom'); span.setAttribute('data-hex',normalizeHex(color)); span.style.background=hexToRgba(color,0.6); }
+    if(color && color.startsWith && color.startsWith('#')){ span.setAttribute('data-color','custom'); span.setAttribute('data-hex',normHex(color)); span.style.background=hexToRgba(color,0.6); }
     else{ span.setAttribute('data-color',color||'yellow'); span.removeAttribute('data-hex'); span.style.background=''; }
   }
-  function hexToRgba(hex,a){ const m=/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(normalizeHex(hex)); if(!m) return hex; const r=parseInt(m[1],16), g=parseInt(m[2],16), b=parseInt(m[3],16); return `rgba(${r},${g},${b},${a==null?0.6:a})`; }
+  function hexToRgba(hex,a){ const m=/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(normHex(hex)); if(!m) return hex; const r=parseInt(m[1],16), g=parseInt(m[2],16), b=parseInt(m[3],16); return `rgba(${r},${g},${b},${a==null?0.6:a})`; }
   function guessHexFromName(n){ return ({yellow:'#ffe600',green:'#80e680',blue:'#8abaff',pink:'#ff8ad2',orange:'#ffc266'})[n] || '#ffe600'; }
 
-  /* -------------------- HYDRATE -------------------- */
+  /* ============ HYDRATE ============ */
   function hydrateOnce(){
     const arr=load();
     for(const r of arr){
@@ -421,13 +406,13 @@ Use a line with only ~ to force a gap."></textarea>
       const r=sel.getRangeAt(0); if(r.collapsed) return;
       pendingRange=r.cloneRange(); pendingAnchor=rangeToAnchor(pendingRange);
       edText.value=''; edColor='yellow'; edHex=null; edPicker.value='#ffe600';
-      edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
+      edDots.forEach(x=>x.classList.toggle('active',x.dataset.c===edColor));
       const rc=selectionRect(r); if(!rc) return;
       showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+10); edText.focus();
     });
     GM_registerMenuCommand('List annotations',()=>{
       const arr=load(); if(!arr.length) return alert('No annotations for this page.');
-      alert(arr.map(a=>`${a.uid}  [${a.color}]  ${a.exact?.slice(0,60)||'(xpath)'} …`).join('\n'));
+      alert(arr.map(a=>`${a.uid} [${a.color}] ${a.exact?.slice(0,60)||'(xpath)'} …`).join('\n'));
     });
   }
 
