@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v4.1.1 (Deduped Custom Swatches + Better List Spacing)
+// @name         Persistent Highlighter + Notes — v4.2.1 (Hover + Click popover; MD break fix)
 // @namespace    qt-highlighter
-// @version      4.1.1
-// @description  Select text → Add → Markdown note. Hover shows popover (edit, delete, pin, color incl. picker & saved custom swatches). Robust persistence (GM storage + XPath), SPA-safe.
+// @version      4.2.1
+// @description  Select text → Add → Markdown note. Hover OR click shows popover (edit, delete, pin, color incl. picker & saved custom swatches). Robust persistence (GM storage + XPath), SPA-safe.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
 // @run-at       document-end
@@ -121,10 +121,11 @@
   function esc(s){ return s.replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m])); }
   function mdToHtml(md){
     if (!md) return '';
-    const blocks = [];
-    md = md.replace(/```([\s\S]*?)```/g, (_,code)=>{ blocks.push(code); return `\uE000${blocks.length-1}\uE000`; });
+    const fences = [];
+    md = md.replace(/```([\s\S]*?)```/g, (_,code)=>{ fences.push(code); return `\uE000${fences.length-1}\uE000`; });
     let text = esc(md);
 
+    // headings
     text = text.replace(/^###### (.+)$/gm,'<h6>$1</h6>')
                .replace(/^##### (.+)$/gm,'<h5>$1</h5>')
                .replace(/^#### (.+)$/gm,'<h4>$1</h4>')
@@ -132,11 +133,15 @@
                .replace(/^## (.+)$/gm,'<h2>$1</h2>')
                .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
 
+    // build <ul>
     const lines = text.split('\n'); let out=[], inList=false;
     for (const line of lines){
       if (/^\s*[-*]\s+/.test(line)) {
         if (!inList){ out.push('<ul>'); inList=true; }
         out.push('<li>' + line.replace(/^\s*[-*]\s+/, '') + '</li>');
+      } else if (/^\s*$/.test(line)) {
+        if (inList){ out.push('</ul>'); inList=false; }
+        out.push('');
       } else {
         if (inList){ out.push('</ul>'); inList=false; }
         out.push(line);
@@ -145,27 +150,26 @@
     if (inList) out.push('</ul>');
     text = out.join('\n');
 
-    // Custom hard-break token: a line with only "~" forces a paragraph break
-    // ...works even between a </ul> and the next paragraph.
-    t = t.replace(/(^|\n)~(\n|$)/g, '\n\n');
-    
-    const blocks2 = text.split(/\n{2,}/).map(b => b.trim());
-    const htmlBlocks = blocks2.map(b => {
-      if (!b) return '';
-      const startsWithHtml = /^(<ul>|<h[1-6]\b|<pre\b|<\/ul>)/.test(b) || b.includes('<li>');
-      return startsWithHtml ? b : `<p>${b.replace(/\n/g,'<br>')}</p>`;
-    });
-    text = htmlBlocks.join('');
+    // Custom hard-break token: line containing only "~"
+    text = text.replace(/(^|\n)~(\n|$)/g, '\n\n');   // <-- fixed (was "t" before)
 
+    // split blocks; wrap non-HTML in <p>
+    const blocks2 = text.split(/\n{2,}/).map(b => b.trim());
+    text = blocks2.map(b => {
+      if (!b) return '';
+      const isHtmlBlock = /^(<ul>|<h[1-6]\b|<pre\b|<\/ul>)/.test(b) || b.includes('<li>');
+      return isHtmlBlock ? b : `<p>${b.replace(/\n/g,'<br>')}</p>`;
+    }).join('');
+
+    // inline formatting + code fences
     text = text.replace(/`([^`]+)`/g, '<code>$1</code>')
                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>');
-    text = text.replace(/\uE000(\d+)\uE000/g, (_,i)=>`<pre><code>${esc(blocks[+i])}</code></pre>`);
+               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>')
+               .replace(/\uE000(\d+)\uE000/g, (_,i)=>`<pre><code>${esc(fences[+i])}</code></pre>`);
     return text;
   }
 
   // ---------- UI ----------
-  // shared state
   let pendingRange=null, pendingAnchor=null, edColor='yellow', edHex=null;
 
   const pill = div('uw-pill',`Annotate <button>Add</button>`); document.documentElement.appendChild(pill);
@@ -225,7 +229,7 @@ Double Enter = new paragraph."></textarea>
   const popPin  = pop.querySelector('.uw-pin');
   let popSpan = null, isPinned = false, hideTimer = null;
 
-  // render saved custom swatches in both places
+  // render saved custom swatches
   function renderCustoms(){
     const sw = loadSwatches();
     const mk = hex => `<span class="uw-color uw-custom" data-hex="${hex}" title="${hex}" style="background:${hex};"></span>`;
@@ -271,25 +275,7 @@ Double Enter = new paragraph."></textarea>
   document.addEventListener('keyup', (e)=>{ if (e.key === 'Shift') updatePillFromSelection(); });
 
   document.addEventListener('mousedown', e => { if (!pill.contains(e.target) && !editor.contains(e.target) && !pop.contains(e.target)) hide(pill); }, true);
-  pillBtn.addEventListener('click', e => { e.preventDefault(); openEditorFromSelection(); });
-
-  // ---------- Editor actions ----------
-  edDots.forEach(s=>s.addEventListener('click',()=>{
-    edColor=s.dataset.c; edHex=null;
-    edDots.forEach(x=>x.classList.toggle('active', x===s));
-  }));
-  // Live preview on input; save swatch only on change
-  edPicker.addEventListener('input', ()=>{
-    edHex = edPicker.value; edColor='custom';
-    edDots.forEach(x=>x.classList.remove('active'));
-  });
-  edPicker.addEventListener('change', ()=>{
-    if (edHex) addSwatch(edHex);
-  });
-  edCancel.addEventListener('click', ()=>{ hide(editor); });
-  edSave.onclick = saveNew;
-
-  function openEditorFromSelection(){
+  const openEditorFromSelection = () => {
     const sel=getSelection(); if (!sel || sel.rangeCount===0) return;
     const r=sel.getRangeAt(0); if (r.collapsed) return;
     pendingRange = r.cloneRange();
@@ -298,7 +284,15 @@ Double Enter = new paragraph."></textarea>
     edColor='yellow'; edHex=null; edPicker.value='#ffe600';
     edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
     const rc=r.getBoundingClientRect(); showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+10); edText.focus();
-  }
+  };
+  pillBtn.addEventListener('click', e => { e.preventDefault(); openEditorFromSelection(); });
+
+  // ---------- Editor actions ----------
+  edDots.forEach(s=>s.addEventListener('click',()=>{ edColor=s.dataset.c; edHex=null; edDots.forEach(x=>x.classList.toggle('active', x===s)); }));
+  edPicker.addEventListener('input', ()=>{ edHex = edPicker.value; edColor='custom'; edDots.forEach(x=>x.classList.remove('active')); });
+  edPicker.addEventListener('change', ()=>{ if (edHex) addSwatch(edHex); });
+  edCancel.addEventListener('click', ()=> hide(editor));
+  edSave.onclick = saveNew;
 
   function saveNew(){
     if (!pendingRange || !pendingAnchor) return hide(editor);
@@ -319,7 +313,7 @@ Double Enter = new paragraph."></textarea>
     pendingRange=null; pendingAnchor=null;
   }
 
-  // ---------- Popover (sticky + pin) ----------
+  // ---------- Popover (hover OR click) ----------
   function showPopoverFor(span){
     popSpan = span;
     const cur = span.getAttribute('data-color');
@@ -331,10 +325,9 @@ Double Enter = new paragraph."></textarea>
     showAt(pop, rect.left + window.scrollX, rect.bottom + window.scrollY + 6);
   }
   function clearHideTimer(){ if (hideTimer) { clearTimeout(hideTimer); hideTimer=null; } }
-  function maybeHide(){
-    if (isPinned) return;
-    if (!pop.matches(':hover') && !(popSpan && popSpan.matches(':hover'))) hide(pop);
-  }
+  function maybeHide(){ if (isPinned) return; if (!pop.matches(':hover') && !(popSpan && popSpan.matches(':hover'))) hide(pop); }
+
+  // Hover (capture)
   document.addEventListener('mouseover', (e) => {
     const span = e.target.closest('.uw-annot'); if (!span) return;
     clearHideTimer(); showPopoverFor(span);
@@ -345,6 +338,19 @@ Double Enter = new paragraph."></textarea>
   }, true);
   pop.addEventListener('mouseenter', clearHideTimer);
   pop.addEventListener('mouseleave', () => { if (!isPinned) maybeHide(); });
+
+  // NEW: Also open popover on CLICK (reliable on SharePoint etc.)
+  document.addEventListener('click', (e) => {
+    const s = e.target.closest('.uw-annot');
+    if (!s) return;
+    e.preventDefault();
+    e.stopPropagation();
+    clearHideTimer();
+    showPopoverFor(s);
+    isPinned = true;
+    popPin.classList.add('active');
+  }, true);
+
   popPin.addEventListener('click', () => {
     isPinned = !isPinned;
     popPin.classList.toggle('active', isPinned);
@@ -352,7 +358,7 @@ Double Enter = new paragraph."></textarea>
   });
   popClose.addEventListener('click', () => { isPinned=false; popPin.classList.remove('active'); hide(pop); });
 
-  // EDIT — close popover, then show editor
+  // EDIT
   popEdit.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!popSpan) return;
@@ -398,7 +404,7 @@ Double Enter = new paragraph."></textarea>
     setTimeout(hydrateOnce, 20);
   });
 
-  // Swatches in popover (named)
+  // Swatches in popover
   popDots.forEach(s=>s.addEventListener('click',(e)=>{
     e.stopPropagation();
     if (!popSpan) return;
@@ -407,7 +413,6 @@ Double Enter = new paragraph."></textarea>
     const rec = getRecForSpan(popSpan);
     if (rec) updateByUid(rec.uid, r => ({...r, color:c}));
   }));
-  // Popover picker: live apply on input, save on change
   popPicker.addEventListener('input', (e)=>{
     if (!popSpan) return;
     const hex = e.target.value;
@@ -416,10 +421,7 @@ Double Enter = new paragraph."></textarea>
     const rec = getRecForSpan(popSpan);
     if (rec) updateByUid(rec.uid, r => ({...r, color:hex}));
   });
-  popPicker.addEventListener('change', (e)=>{
-    const hex = e.target.value;
-    addSwatch(hex);
-  });
+  popPicker.addEventListener('change', (e)=> addSwatch(e.target.value));
 
   // ---------- HELPERS ----------
   function div(cls, html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
@@ -480,103 +482,4 @@ Double Enter = new paragraph."></textarea>
     span.setAttribute('data-so', rec.startOffset);
     span.setAttribute('data-ex', rec.endXPath);
     span.setAttribute('data-eo', rec.endOffset);
-    applyColor(span, rec.color || 'yellow');
-    try { range.surroundContents(span); }
-    catch {
-      const tmp = document.createElement('span');
-      tmp.textContent = range.toString();
-      span.appendChild(tmp);
-      range.deleteContents();
-      range.insertNode(span);
-    }
-  }
-
-  function applyColor(span, color){
-    if (color && color.startsWith && color.startsWith('#')){
-      span.setAttribute('data-color', 'custom');
-      span.setAttribute('data-hex', normalizeHex(color));
-      span.style.background = hexToRgba(color, 0.6);
-    } else {
-      span.setAttribute('data-color', color || 'yellow');
-      span.removeAttribute('data-hex');
-      span.style.background = ''; // CSS swatch for named colors
-    }
-  }
-  function hexToRgba(hex, a){
-    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(normalizeHex(hex));
-    if (!m) return hex;
-    const r = parseInt(m[1],16), g = parseInt(m[2],16), b = parseInt(m[3],16);
-    return `rgba(${r},${g},${b},${a==null?0.6:a})`;
-  }
-  function guessHexFromName(name){
-    switch(name){
-      case 'yellow': return '#ffe600';
-      case 'green':  return '#80e680';
-      case 'blue':   return '#8abaff';
-      case 'pink':   return '#ff8ad2';
-      case 'orange': return '#ffc266';
-      default: return '#ffe600';
-    }
-  }
-  function getRecForSpan(span){
-    const uidVal = span.getAttribute('data-uid');
-    if (uidVal){
-      const r = load().find(x => x.uid === uidVal);
-      if (r) return r;
-    }
-    const a = spanAnchorFromDataset(span);
-    if (a){
-      const r = load().find(x =>
-        x.startXPath===a.startXPath && x.startOffset===a.startOffset &&
-        x.endXPath===a.endXPath && x.endOffset===a.endOffset
-      );
-      if (r) return r;
-    }
-    return null;
-  }
-
-  // ---------- HYDRATE / OBSERVE ----------
-  function hydrateOnce(){
-    const arr = load();
-    for (const r of arr) {
-      if (document.querySelector(`.uw-annot[data-uid="${r.uid}"]`)) continue;
-      const range = anchorToRange(r);
-      if (range) { try { wrapRange(range, r); } catch {} }
-    }
-  }
-  const mo = new MutationObserver(()=>{ clearTimeout(mo._t); mo._t = setTimeout(hydrateOnce, 400); });
-  mo.observe(document.documentElement, { childList:true, subtree:true });
-
-  // ---------- MENU ----------
-  if (typeof GM_registerMenuCommand === 'function') {
-    GM_registerMenuCommand('Add highlight from selection', ()=>{
-      const sel=getSelection(); if (!sel || sel.rangeCount===0) return;
-      const r=sel.getRangeAt(0); if (r.collapsed) return;
-      pendingRange = r.cloneRange(); pendingAnchor = rangeToAnchor(pendingRange);
-      edText.value=''; edColor='yellow'; edHex=null; edPicker.value='#ffe600';
-      edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
-      const rc=r.getBoundingClientRect(); showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+10); edText.focus();
-    });
-    GM_registerMenuCommand('List annotations', ()=>{
-      const arr = load(); if (!arr.length) return alert('No annotations for this page.');
-      alert(arr.map(a=>`${a.uid}  [${a.color}]  ${a.exact?.slice(0,60)||'(xpath)'} …`).join('\n'));
-    });
-  }
-
-  // ---------- BOOT ----------
-  hydrateOnce();
-  setTimeout(hydrateOnce, 1000);
-
-  // ---------- tiny helpers ----------
-  function colors(){ return ['yellow','green','blue','pink','orange']; }
-  function dot(c){ return `<span class="uw-color" data-c="${c}" title="${c}"></span>`; }
-  function div(cls, html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
-  function showAt(node,x,y){ node.style.left=Math.round(x)+'px'; node.style.top=Math.round(y)+'px'; node.style.display='block'; }
-  function hide(node){ node.style.display='none'; }
-  function uid(){ return 'u' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
-  function rangeToAnchor(r){ return { startXPath:getXPath(r.startContainer), startOffset:r.startOffset, endXPath:getXPath(r.endContainer), endOffset:r.endOffset }; }
-  function getXPath(node){ if (!node) return null; const parts=[]; while (node && node.nodeType!==Node.DOCUMENT_NODE){ let i=1,s=node.previousSibling; while(s){ if(s.nodeName===node.nodeName) i++; s=s.previousSibling; } parts.unshift(node.nodeType===Node.TEXT_NODE?`text()[${i}]`:`${node.nodeName.toLowerCase()}[${i}]`); node=node.parentNode; } return '/'+parts.join('/'); }
-  function resolveXPath(x){ try{ return document.evaluate(x, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue||null; }catch{ return null; } }
-  function anchorToRange(a){ const sc=resolveXPath(a.startXPath), ec=resolveXPath(a.endXPath); if(!sc||!ec) return null; try{ const r=document.createRange(); r.setStart(sc, Math.min(a.startOffset,(sc.nodeValue||'').length)); r.setEnd(ec, Math.min(a.endOffset,(ec.nodeValue||'').length)); return r.collapsed?null:r; }catch{ return null; } }
-})();
-
+   
