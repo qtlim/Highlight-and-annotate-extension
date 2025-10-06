@@ -127,6 +127,9 @@
     if(inList) out.push('</ul>');
     t=out.join('\n');
 
+    // // guarantee a true paragraph break after any </ul> when followed by content
+    // t = t.replace(/<\/ul>\s*(?=\S)/g, '</ul>\n\n');
+
     // guarantee true paragraph break after UL
     t=t.replace(/<\/ul>\n(?!\n)/g,'</ul>\n\n');
 
@@ -462,4 +465,5 @@ Double Enter = new paragraph."></textarea>
   hydrateOnce();
   setTimeout(hydrateOnce,1000);
 })();
+
 
