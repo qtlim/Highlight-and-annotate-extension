@@ -57,11 +57,12 @@
     .uw-pop .uw-content p { margin:12px 0; }             /* normal paragraph gap */
     .uw-pop .uw-content ul { margin:2px 0; padding-left:18px; } /* tight list body */
     .uw-pop .uw-content ul li { margin:0; }
-    
-    /* cross-direction gaps */
-    .uw-pop .uw-content * + ul { margin-top:10px !important; }  /* paragraph → list */
-    .uw-pop .uw-content ul + * { margin-top:18px !important; }  /* list → paragraph/anything */
-    
+        
+    /* small/near-zero gap BEFORE a list */
+    .uw-pop .uw-content * + ul { margin-top: 2px !important; }
+    /* clear larger gap AFTER a list */
+    .uw-pop .uw-content ul + * { margin-top: 18px !important; }
+
     .uw-pop .uw-content code{background:#f6f6f6;padding:2px 4px;border-radius:4px}
     .uw-pop .uw-content pre{background:#f6f6f6;padding:8px;border-radius:6px;overflow:auto}
   `);
@@ -130,8 +131,11 @@
     // // guarantee a true paragraph break after any </ul> when followed by content
     // t = t.replace(/<\/ul>\s*(?=\S)/g, '</ul>\n\n');
 
-    // guarantee true paragraph break after UL
-    t=t.replace(/<\/ul>\n(?!\n)/g,'</ul>\n\n');
+    // guarantee a real paragraph break after any </ul>
+    t = t.replace(/<\/ul>\s*(?=\S)/g, '</ul>\n\n');
+
+    // // guarantee true paragraph break after UL
+    // t=t.replace(/<\/ul>\n(?!\n)/g,'</ul>\n\n');
 
     const blocks=t.split(/\n{2,}/).map(b=>b.trim());
     t=blocks.map(b=>{
@@ -465,5 +469,6 @@ Double Enter = new paragraph."></textarea>
   hydrateOnce();
   setTimeout(hydrateOnce,1000);
 })();
+
 
 
