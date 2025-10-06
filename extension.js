@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v4.2.1 (Hover + Click popover; MD break fix)
+// @name         Persistent Highlighter + Notes — v4.2.2 (Reliable selection pill + click/hover popover)
 // @namespace    qt-highlighter
-// @version      4.2.1
+// @version      4.2.2
 // @description  Select text → Add → Markdown note. Hover OR click shows popover (edit, delete, pin, color incl. picker & saved custom swatches). Robust persistence (GM storage + XPath), SPA-safe.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
@@ -17,7 +17,7 @@
   'use strict';
   if (location.href.startsWith('about:') || location.host.includes('addons.mozilla.org')) return;
 
-  // ---------- THEME / TYPOGRAPHY ----------
+  /* -------------------- STYLE -------------------- */
   GM_addStyle(`
     .uw-annot { padding:0 1px; border-radius:2px; cursor:help; }
     .uw-annot[data-color="yellow"] { background: rgba(255,230,0,.65); }
@@ -27,105 +27,68 @@
     .uw-annot[data-color="orange"] { background: rgba(255,200,120,.55); }
     .uw-annot:hover { outline: 1px solid rgba(0,0,0,.25); }
 
-    .uw-pill {
-      position:absolute; z-index:2147483647; display:none;
-      background:#fff; color:#111; border:1px solid #ddd; border-radius:999px; padding:6px 10px;
-      font:12px/1 -apple-system,Segoe UI,Roboto,sans-serif; box-shadow:0 4px 16px rgba(0,0,0,.1); user-select:none;
-    }
-    .uw-pill button { all:unset; cursor:pointer; background:#ffd400; color:#111; padding:4px 8px; border-radius:999px; font-weight:700; margin-left:8px; }
+    .uw-pill{position:absolute;z-index:2147483647;display:none;background:#fff;color:#111;border:1px solid #ddd;border-radius:999px;padding:6px 10px;font:12px/1 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.1);user-select:none}
+    .uw-pill button{all:unset;cursor:pointer;background:#ffd400;color:#111;padding:4px 8px;border-radius:999px;font-weight:700;margin-left:8px}
 
-    .uw-editor, .uw-pop {
-      position:absolute; z-index:2147483647; display:none; max-width:380px;
-      background:#fff; color:#222; border:1px solid #ddd; border-radius:10px; padding:10px;
-      box-shadow:0 10px 28px rgba(0,0,0,.12);
-      font:14px/1.45 -apple-system, Segoe UI, Roboto, sans-serif;
-    }
-    .uw-editor textarea {
-      width:100%; min-height:120px; resize:vertical; box-sizing:border-box;
-      border:1px solid #ccc; background:#fff; color:#222; border-radius:6px; padding:8px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    }
-    .uw-row { display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap; }
-    .uw-row .uw-spacer { flex:1; }
-    .uw-btn { all:unset; cursor:pointer; background:#2b6; color:#fff; padding:6px 10px; border-radius:8px; font-weight:700; }
-    .uw-btn.cancel { background:#888; }
+    .uw-editor,.uw-pop{position:absolute;z-index:2147483647;display:none;max-width:380px;background:#fff;color:#222;border:1px solid #ddd;border-radius:10px;padding:10px;box-shadow:0 10px 28px rgba(0,0,0,.12);font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif}
+    .uw-editor textarea{width:100%;min-height:120px;resize:vertical;box-sizing:border-box;border:1px solid #ccc;background:#fff;color:#222;border-radius:6px;padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .uw-row{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}.uw-row .uw-spacer{flex:1}
+    .uw-btn{all:unset;cursor:pointer;background:#2b6;color:#fff;padding:6px 10px;border-radius:8px;font-weight:700}.uw-btn.cancel{background:#888}
 
-    .uw-color { width:18px; height:18px; border-radius:50%; border:2px solid #0002; cursor:pointer; }
-    .uw-color[data-c="yellow"] { background:#ffe600; }
-    .uw-color[data-c="green"]  { background:#80e680; }
-    .uw-color[data-c="blue"]   { background:#8abaff; }
-    .uw-color[data-c="pink"]   { background:#ff8ad2; }
-    .uw-color[data-c="orange"] { background:#ffc266; }
-    .uw-color.active { outline:2px solid #333; }
-    .uw-custom { box-shadow: inset 0 0 0 2px #fff; border:1px solid #0002; }
+    .uw-color{width:18px;height:18px;border-radius:50%;border:2px solid #0002;cursor:pointer}
+    .uw-color[data-c=yellow]{background:#ffe600}.uw-color[data-c=green]{background:#80e680}
+    .uw-color[data-c=blue]{background:#8abaff}.uw-color[data-c=pink]{background:#ff8ad2}
+    .uw-color[data-c=orange]{background:#ffc266}.uw-color.active{outline:2px solid #333}
+    .uw-custom{box-shadow:inset 0 0 0 2px #fff;border:1px solid #0002}
 
-    .uw-pop .uw-toolbar { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
-    .uw-pop .uw-tool { all:unset; cursor:pointer; background:#f2f2f2; color:#333; padding:4px 8px; border-radius:6px; font-size:12px; border:1px solid #e1e1e1; }
-    .uw-pop .uw-pin { all:unset; cursor:pointer; background:#f2f2f2; color:#333; padding:4px 8px; border-radius:6px; font-size:12px; border:1px solid #e1e1e1; }
-    .uw-pop .uw-pin.active { background:#ffd400; color:#111; border-color:#e6c600; }
-    .uw-pop .uw-close { margin-left:4px; }
-    .uw-pop .uw-colors { display:flex; gap:6px; margin-left:auto; align-items:center; flex-wrap:wrap; }
-    .uw-pop input.uw-picker, .uw-editor input.uw-picker { width:22px; height:22px; border:none; padding:0; background:transparent; cursor:pointer; }
-    .uw-customs { display:flex; gap:6px; }
+    .uw-pop .uw-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+    .uw-pop .uw-tool,.uw-pop .uw-pin{all:unset;cursor:pointer;background:#f2f2f2;color:#333;padding:4px 8px;border-radius:6px;font-size:12px;border:1px solid #e1e1e1}
+    .uw-pop .uw-pin.active{background:#ffd400;color:#111;border-color:#e6c600}
+    .uw-pop .uw-close{margin-left:4px}
+    .uw-pop .uw-colors{display:flex;gap:6px;margin-left:auto;align-items:center;flex-wrap:wrap}
+    .uw-pop input.uw-picker,.uw-editor input.uw-picker{width:22px;height:22px;border:none;padding:0;background:transparent;cursor:pointer}
+    .uw-customs{display:flex;gap:6px}
 
-    .uw-pop .uw-content { background:#fff; border:1px solid #eee; border-radius:8px; padding:8px; max-height:340px; overflow:auto; color:#222; }
-    .uw-pop .uw-content, .uw-pop .uw-content p, .uw-pop .uw-content li { font-size:14px; line-height:1.45; }
-    .uw-pop .uw-content p { margin: 10px 0; }
-    .uw-pop .uw-content ul { margin: 2px 0; padding-left:18px; }
-    .uw-pop .uw-content ul li { margin: 0; }
-    .uw-pop .uw-content p + ul { margin-top: 8px !important; }   /* paragraph → list */
-    .uw-pop .uw-content ul + p { margin-top: 14px !important; }  /* list → paragraph */
-    .uw-pop .uw-content code { background:#f6f6f6; padding:2px 4px; border-radius:4px; }
-    .uw-pop .uw-content pre { background:#f6f6f6; padding:8px; border-radius:6px; overflow:auto; }
+    .uw-pop .uw-content{background:#fff;border:1px solid #eee;border-radius:8px;padding:8px;max-height:340px;overflow:auto;color:#222}
+    .uw-pop .uw-content,.uw-pop .uw-content p,.uw-pop .uw-content li{font-size:14px;line-height:1.45}
+    .uw-pop .uw-content p{margin:10px 0}
+    .uw-pop .uw-content ul{margin:2px 0;padding-left:18px}
+    .uw-pop .uw-content ul li{margin:0}
+    .uw-pop .uw-content p+ul{margin-top:8px!important}   /* paragraph → list */
+    .uw-pop .uw-content ul+p{margin-top:14px!important}  /* list → paragraph */
+    .uw-pop .uw-content code{background:#f6f6f6;padding:2px 4px;border-radius:4px}
+    .uw-pop .uw-content pre{background:#f6f6f6;padding:8px;border-radius:6px;overflow:auto}
   `);
 
-  // ---------- STORAGE ----------
-  function pageKey() {
-    try { const u = new URL(window.top.location.href); return `uw_annots::${u.origin}${u.pathname}`; }
-    catch { const u = new URL(location.href); return `uw_annots::${u.origin}${u.pathname}`; }
+  /* -------------------- STORAGE -------------------- */
+  function pageKey(){
+    try{ const u=new URL(window.top.location.href); return `uw_annots::${u.origin}${u.pathname}`; }
+    catch{ const u=new URL(location.href); return `uw_annots::${u.origin}${u.pathname}`; }
   }
-  const load = () => { try { return JSON.parse(GM_getValue(pageKey(), '[]')); } catch { return []; } };
+  const load = () => { try{ return JSON.parse(GM_getValue(pageKey(),'[]')); } catch{ return []; } };
   const save = (arr) => GM_setValue(pageKey(), JSON.stringify(arr));
 
-  // persistent custom swatches (deduped)
-  const SWATCH_KEY = 'uw_custom_swatches';
-  function normalizeHex(h){
-    if (!h) return null;
-    h = h.trim();
-    if (!h.startsWith('#')) h = '#'+h;
-    if (/^#([a-f0-9]{3})$/i.test(h)) h = '#'+h.slice(1).split('').map(c=>c+c).join('');
-    return /^#[a-f0-9]{6}$/i.test(h) ? h.toLowerCase() : null;
-  }
-  function uniqueHexes(list){
-    const seen = new Set(); const out = [];
-    for (const x of list || []) {
-      const hx = normalizeHex(x);
-      if (hx && !seen.has(hx)) { seen.add(hx); out.push(hx); }
-    }
-    return out;
-  }
-  const loadSwatches = () => uniqueHexes( JSON.parse(GM_getValue(SWATCH_KEY, '[]')) );
-  const saveSwatches = (arr) => GM_setValue(SWATCH_KEY, JSON.stringify(uniqueHexes(arr).slice(0,8)));
-  function addSwatch(hex){
-    const hx = normalizeHex(hex);
-    if (!hx) return;
-    const arr = loadSwatches();
-    if (!arr.includes(hx)) { arr.unshift(hx); saveSwatches(arr); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop); }
-  }
+  const SWATCH_KEY='uw_custom_swatches';
+  const normalizeHex = h => { if(!h) return null; h=h.trim(); if(!h.startsWith('#')) h='#'+h;
+    if(/^#([a-f0-9]{3})$/i.test(h)) h='#'+h.slice(1).split('').map(c=>c+c).join('');
+    return /^#[a-f0-9]{6}$/i.test(h)?h.toLowerCase():null; };
+  const uniqueHexes = list => { const s=new Set(), out=[]; for(const x of list||[]){ const hx=normalizeHex(x); if(hx&&!s.has(hx)){ s.add(hx); out.push(hx); } } return out; };
+  const loadSwatches = () => uniqueHexes(JSON.parse(GM_getValue(SWATCH_KEY,'[]')));
+  const saveSwatches = arr => GM_setValue(SWATCH_KEY, JSON.stringify(uniqueHexes(arr).slice(0,8)));
+  function addSwatch(hex){ const hx=normalizeHex(hex); if(!hx) return; const a=loadSwatches(); if(!a.includes(hx)){ a.unshift(hx); saveSwatches(a); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop); } }
 
-  function updateByUid(uid, fn){ const arr=load(); const i=arr.findIndex(r=>r.uid===uid); if(i>=0){arr[i]=fn(arr[i])||arr[i]; save(arr); return arr[i];} return null; }
-  function deleteByUid(uid){ const arr=load(); const i=arr.findIndex(r=>r.uid===uid); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
-  function deleteByAnchor(a){ const arr=load(); const i=arr.findIndex(r=>r.startXPath===a.startXPath&&r.startOffset===a.startOffset&&r.endXPath===a.endXPath&&r.endOffset===a.endOffset); if(i>=0){arr.splice(i,1); save(arr); return true;} return false; }
+  const updateByUid=(uid,fn)=>{ const a=load(); const i=a.findIndex(r=>r.uid===uid); if(i>=0){ a[i]=fn(a[i])||a[i]; save(a); return a[i]; } return null; };
+  const deleteByUid = uid => { const a=load(); const i=a.findIndex(r=>r.uid===uid); if(i>=0){ a.splice(i,1); save(a); return true; } return false; };
+  const deleteByAnchor = anc => { const a=load(); const i=a.findIndex(r=>r.startXPath===anc.startXPath&&r.startOffset===anc.startOffset&&r.endXPath===anc.endXPath&&r.endOffset===anc.endOffset); if(i>=0){ a.splice(i,1); save(a); return true; } return false; };
 
-  // ---------- MARKDOWN ----------
-  function esc(s){ return s.replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m])); }
+  /* -------------------- MARKDOWN -------------------- */
+  const esc = s=>s.replace(/[&<>"]/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m]));
   function mdToHtml(md){
-    if (!md) return '';
-    const fences = [];
-    md = md.replace(/```([\s\S]*?)```/g, (_,code)=>{ fences.push(code); return `\uE000${fences.length-1}\uE000`; });
+    if(!md) return '';
+    const fences=[];
+    md = md.replace(/```([\s\S]*?)```/g,(_,code)=>{ fences.push(code); return `\uE000${fences.length-1}\uE000`; });
     let text = esc(md);
 
-    // headings
     text = text.replace(/^###### (.+)$/gm,'<h6>$1</h6>')
                .replace(/^##### (.+)$/gm,'<h5>$1</h5>')
                .replace(/^#### (.+)$/gm,'<h4>$1</h4>')
@@ -133,47 +96,44 @@
                .replace(/^## (.+)$/gm,'<h2>$1</h2>')
                .replace(/^# (.+)$/gm,'<h1 style="font-size:1.15em;margin:4px 0;">$1</h1>');
 
-    // build <ul>
     const lines = text.split('\n'); let out=[], inList=false;
-    for (const line of lines){
-      if (/^\s*[-*]\s+/.test(line)) {
-        if (!inList){ out.push('<ul>'); inList=true; }
-        out.push('<li>' + line.replace(/^\s*[-*]\s+/, '') + '</li>');
-      } else if (/^\s*$/.test(line)) {
-        if (inList){ out.push('</ul>'); inList=false; }
+    for(const line of lines){
+      if(/^\s*[-*]\s+/.test(line)){
+        if(!inList){ out.push('<ul>'); inList=true; }
+        out.push('<li>'+line.replace(/^\s*[-*]\s+/,'')+'</li>');
+      } else if(/^\s*$/.test(line)){
+        if(inList){ out.push('</ul>'); inList=false; }
         out.push('');
       } else {
-        if (inList){ out.push('</ul>'); inList=false; }
+        if(inList){ out.push('</ul>'); inList=false; }
         out.push(line);
       }
     }
-    if (inList) out.push('</ul>');
+    if(inList) out.push('</ul>');
     text = out.join('\n');
 
-    // Custom hard-break token: line containing only "~"
-    text = text.replace(/(^|\n)~(\n|$)/g, '\n\n');   // <-- fixed (was "t" before)
+    // custom hard break token "~"
+    text = text.replace(/(^|\n)~(\n|$)/g, '\n\n');
 
-    // split blocks; wrap non-HTML in <p>
-    const blocks2 = text.split(/\n{2,}/).map(b => b.trim());
-    text = blocks2.map(b => {
-      if (!b) return '';
-      const isHtmlBlock = /^(<ul>|<h[1-6]\b|<pre\b|<\/ul>)/.test(b) || b.includes('<li>');
-      return isHtmlBlock ? b : `<p>${b.replace(/\n/g,'<br>')}</p>`;
+    const blocks = text.split(/\n{2,}/).map(b=>b.trim());
+    text = blocks.map(b=>{
+      if(!b) return '';
+      const isHtml = /^(<ul>|<h[1-6]\b|<pre\b|<\/ul>)/.test(b) || b.includes('<li>');
+      return isHtml ? b : `<p>${b.replace(/\n/g,'<br>')}</p>`;
     }).join('');
 
-    // inline formatting + code fences
-    text = text.replace(/`([^`]+)`/g, '<code>$1</code>')
-               .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>')
-               .replace(/\uE000(\d+)\uE000/g, (_,i)=>`<pre><code>${esc(fences[+i])}</code></pre>`);
+    text = text.replace(/`([^`]+)`/g,'<code>$1</code>')
+               .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+               .replace(/(^|[^*\S])\*([^*\n]+)\*(?!\w)/g,'$1<em>$2</em>')
+               .replace(/\uE000(\d+)\uE000/g,(_,i)=>`<pre><code>${esc(fences[+i])}</code></pre>`);
     return text;
   }
 
-  // ---------- UI ----------
+  /* -------------------- UI -------------------- */
   let pendingRange=null, pendingAnchor=null, edColor='yellow', edHex=null;
 
   const pill = div('uw-pill',`Annotate <button>Add</button>`); document.documentElement.appendChild(pill);
-  const pillBtn = pill.querySelector('button');
+  const pillBtn=pill.querySelector('button');
 
   const editor = div('uw-editor',`
     <div style="margin-bottom:6px;font-weight:700;">Enter note (Markdown supported)</div>
@@ -193,16 +153,16 @@ Double Enter = new paragraph."></textarea>
       <button class="uw-btn save">Save</button>
     </div>
   `); document.documentElement.appendChild(editor);
-  const edText = editor.querySelector('textarea');
-  const edDots = [...editor.querySelectorAll('.uw-color')];
-  const edPicker = editor.querySelector('.uw-picker');
-  const edCustoms = editor.querySelector('.uw-editor-customs');
-  const edCancel = editor.querySelector('.cancel');
-  const edSave   = editor.querySelector('.save');
+  const edText=editor.querySelector('textarea');
+  const edDots=[...editor.querySelectorAll('.uw-color')];
+  const edPicker=editor.querySelector('.uw-picker');
+  const edCustoms=editor.querySelector('.uw-editor-customs');
+  const edCancel=editor.querySelector('.cancel');
+  const edSave=editor.querySelector('.save');
 
-  editor.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape') { ev.preventDefault(); edCancel.click(); }
-    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); edSave.click(); }
+  editor.addEventListener('keydown',ev=>{
+    if(ev.key==='Escape'){ ev.preventDefault(); edCancel.click(); }
+    if(ev.key==='Enter'&&(ev.ctrlKey||ev.metaKey)){ ev.preventDefault(); edSave.click(); }
   });
 
   const pop = div('uw-pop',`
@@ -219,267 +179,250 @@ Double Enter = new paragraph."></textarea>
     </div>
     <div class="uw-content"></div>
   `); document.documentElement.appendChild(pop);
-  const popContent = pop.querySelector('.uw-content');
-  const popEdit = pop.querySelector('.uw-edit');
-  const popDel  = pop.querySelector('.uw-del');
-  const popClose= pop.querySelector('.uw-close');
-  const popDots = [...pop.querySelectorAll('.uw-color')];
-  const popPicker = pop.querySelector('.uw-picker');
-  const popCustoms = pop.querySelector('.uw-pop-customs');
-  const popPin  = pop.querySelector('.uw-pin');
-  let popSpan = null, isPinned = false, hideTimer = null;
+  const popContent=pop.querySelector('.uw-content');
+  const popEdit=pop.querySelector('.uw-edit');
+  const popDel=pop.querySelector('.uw-del');
+  const popClose=pop.querySelector('.uw-close');
+  const popDots=[...pop.querySelectorAll('.uw-color')];
+  const popPicker=pop.querySelector('.uw-picker');
+  const popCustoms=pop.querySelector('.uw-pop-customs');
+  const popPin=pop.querySelector('.uw-pin');
+  let popSpan=null, isPinned=false, hideTimer=null;
 
-  // render saved custom swatches
   function renderCustoms(){
-    const sw = loadSwatches();
-    const mk = hex => `<span class="uw-color uw-custom" data-hex="${hex}" title="${hex}" style="background:${hex};"></span>`;
-    edCustoms.innerHTML  = sw.map(mk).join('');
-    popCustoms.innerHTML = sw.map(mk).join('');
+    const sw=loadSwatches();
+    const mk=hex=>`<span class="uw-color uw-custom" data-hex="${hex}" title="${hex}" style="background:${hex};"></span>`;
+    edCustoms.innerHTML=sw.map(mk).join('');
+    popCustoms.innerHTML=sw.map(mk).join('');
   }
   renderCustoms();
 
   function bindCustomClicks(scope){
     scope.querySelectorAll('.uw-custom').forEach(el=>{
-      el.onclick = (e)=>{
-        const hex = e.currentTarget.getAttribute('data-hex');
-        if (!hex) return;
-        if (scope === editor){
-          edHex = hex; edColor='custom'; edPicker.value = hex;
-          edDots.forEach(x=>x.classList.remove('active'));
-        } else {
-          if (!popSpan) return;
-          applyColor(popSpan, hex);
-          popDots.forEach(x=>x.classList.remove('active'));
-          const rec = getRecForSpan(popSpan);
-          if (rec) updateByUid(rec.uid, r => ({...r, color:hex}));
+      el.onclick = e => {
+        const hex=e.currentTarget.getAttribute('data-hex'); if(!hex) return;
+        if(scope===editor){
+          edHex=hex; edColor='custom'; edPicker.value=hex; edDots.forEach(x=>x.classList.remove('active'));
+        }else{
+          if(!popSpan) return;
+          applyColor(popSpan,hex); popDots.forEach(x=>x.classList.remove('active'));
+          const rec=getRecForSpan(popSpan); if(rec) updateByUid(rec.uid,r=>({...r,color:hex}));
         }
       };
     });
   }
-  bindCustomClicks(editor);
-  bindCustomClicks(pop);
+  bindCustomClicks(editor); bindCustomClicks(pop);
 
-  // ---------- Selection pill ----------
-  function updatePillFromSelection(){
-    const sel = getSelection();
-    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return hide(pill);
-    const r = sel.getRangeAt(0);
-    const node = (r.startContainer.nodeType===1 ? r.startContainer : r.startContainer.parentElement);
-    if (node && node.closest('input, textarea, [contenteditable="true"], .uw-annot')) return hide(pill);
-    const rect = r.getBoundingClientRect();
-    if (!rect || (!rect.width && !rect.height)) return hide(pill);
-    showAt(pill, rect.right + window.scrollX + 8, rect.top + window.scrollY - 8);
+  /* ---------- Selection pill (more robust) ---------- */
+  function selectionRect(r){
+    if(!r) return null;
+    const rect=r.getBoundingClientRect();
+    if(rect && (rect.width || rect.height)) return rect;
+    const list=r.getClientRects?.();
+    return (list && list.length)? list[0] : null;
   }
-  document.addEventListener('selectionchange', updatePillFromSelection);
-  document.addEventListener('mouseup', updatePillFromSelection, true);
-  document.addEventListener('keyup', (e)=>{ if (e.key === 'Shift') updatePillFromSelection(); });
+  function shouldIgnoreRange(r){
+    try{
+      const n=(r.startContainer.nodeType===1?r.startContainer:r.startContainer.parentElement);
+      return !!(n && n.closest('input,textarea,[contenteditable="true"],.uw-annot'));
+    }catch{ return true; }
+  }
+  function showPillFromSelection(){
+    try{
+      const sel=getSelection(); if(!sel || sel.rangeCount===0 || sel.isCollapsed) return hide(pill);
+      const r=sel.getRangeAt(0); if(!r || shouldIgnoreRange(r)) return hide(pill);
+      const rc=selectionRect(r); if(!rc) return hide(pill);
+      showAt(pill, rc.right+window.scrollX+8, rc.top+window.scrollY-8);
+    }catch{ hide(pill); }
+  }
+  const delayedShow = () => setTimeout(showPillFromSelection, 0);
 
-  document.addEventListener('mousedown', e => { if (!pill.contains(e.target) && !editor.contains(e.target) && !pop.contains(e.target)) hide(pill); }, true);
-  const openEditorFromSelection = () => {
-    const sel=getSelection(); if (!sel || sel.rangeCount===0) return;
-    const r=sel.getRangeAt(0); if (r.collapsed) return;
-    pendingRange = r.cloneRange();
-    pendingAnchor = rangeToAnchor(pendingRange);
-    edText.value='';
-    edColor='yellow'; edHex=null; edPicker.value='#ffe600';
+  document.addEventListener('selectionchange', delayedShow, true);
+  document.addEventListener('mouseup', delayedShow, true);
+  document.addEventListener('pointerup', delayedShow, true);
+  document.addEventListener('keyup', e=>{ if(e.key==='Shift' || e.key==='ArrowLeft' || e.key==='ArrowRight') delayedShow(); }, true);
+
+  document.addEventListener('mousedown', e=>{ if(!pill.contains(e.target)&&!editor.contains(e.target)&&!pop.contains(e.target)) hide(pill); }, true);
+  pillBtn.addEventListener('click', e=>{ e.preventDefault(); openEditorFromSelection(); });
+
+  function openEditorFromSelection(){
+    const sel=getSelection(); if(!sel||sel.rangeCount===0) return;
+    const r=sel.getRangeAt(0); if(r.collapsed) return;
+    pendingRange=r.cloneRange(); pendingAnchor=rangeToAnchor(pendingRange);
+    edText.value=''; edColor='yellow'; edHex=null; edPicker.value='#ffe600';
     edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
-    const rc=r.getBoundingClientRect(); showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+10); edText.focus();
-  };
-  pillBtn.addEventListener('click', e => { e.preventDefault(); openEditorFromSelection(); });
+    const rc=selectionRect(r); if(!rc) return;
+    showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+10); edText.focus();
+  }
 
-  // ---------- Editor actions ----------
+  /* ---------- Editor ---------- */
   edDots.forEach(s=>s.addEventListener('click',()=>{ edColor=s.dataset.c; edHex=null; edDots.forEach(x=>x.classList.toggle('active', x===s)); }));
-  edPicker.addEventListener('input', ()=>{ edHex = edPicker.value; edColor='custom'; edDots.forEach(x=>x.classList.remove('active')); });
-  edPicker.addEventListener('change', ()=>{ if (edHex) addSwatch(edHex); });
-  edCancel.addEventListener('click', ()=> hide(editor));
+  edPicker.addEventListener('input',()=>{ edHex=edPicker.value; edColor='custom'; edDots.forEach(x=>x.classList.remove('active')); });
+  edPicker.addEventListener('change',()=>{ if(edHex) addSwatch(edHex); });
+  edCancel.addEventListener('click',()=> hide(editor));
   edSave.onclick = saveNew;
 
   function saveNew(){
-    if (!pendingRange || !pendingAnchor) return hide(editor);
-    const colorVal = edHex ? edHex : edColor;
-    const rec = {
-      uid: uid(),
-      noteMd: edText.value || '',
-      color: colorVal, ts: Date.now(),
-      startXPath: pendingAnchor.startXPath, startOffset: pendingAnchor.startOffset,
-      endXPath: pendingAnchor.endXPath,     endOffset: pendingAnchor.endOffset,
-      exact: pendingRange.toString()
-    };
+    if(!pendingRange||!pendingAnchor) return hide(editor);
+    const colorVal=edHex?edHex:edColor;
+    const rec={ uid:uid(), noteMd:edText.value||'', color:colorVal, ts:Date.now(),
+      startXPath:pendingAnchor.startXPath, startOffset:pendingAnchor.startOffset,
+      endXPath:pendingAnchor.endXPath, endOffset:pendingAnchor.endOffset,
+      exact:pendingRange.toString() };
     const arr=load(); arr.push(rec); save(arr);
-    if (colorVal.startsWith && colorVal.startsWith('#')) addSwatch(colorVal);
-    wrapRange(pendingRange, rec);
+    if(colorVal.startsWith && colorVal.startsWith('#')) addSwatch(colorVal);
+    wrapRange(pendingRange,rec);
     hide(editor); hide(pill);
     const sel=getSelection(); sel && sel.removeAllRanges();
     pendingRange=null; pendingAnchor=null;
   }
 
-  // ---------- Popover (hover OR click) ----------
+  /* ---------- Popover (hover + click) ---------- */
   function showPopoverFor(span){
-    popSpan = span;
-    const cur = span.getAttribute('data-color');
-    const hex = span.getAttribute('data-hex');
+    popSpan=span;
+    const cur=span.getAttribute('data-color');
+    const hex=span.getAttribute('data-hex');
     popDots.forEach(c=>c.classList.toggle('active', c.dataset.c===cur));
-    popPicker.value = hex ? hex : guessHexFromName(cur);
-    popContent.innerHTML = mdToHtml(span.getAttribute('data-md') || '');
-    const rect = span.getBoundingClientRect();
-    showAt(pop, rect.left + window.scrollX, rect.bottom + window.scrollY + 6);
+    popPicker.value=hex?hex:guessHexFromName(cur);
+    popContent.innerHTML=mdToHtml(span.getAttribute('data-md')||'');
+    const rect=span.getBoundingClientRect();
+    showAt(pop, rect.left+window.scrollX, rect.bottom+window.scrollY+6);
   }
-  function clearHideTimer(){ if (hideTimer) { clearTimeout(hideTimer); hideTimer=null; } }
-  function maybeHide(){ if (isPinned) return; if (!pop.matches(':hover') && !(popSpan && popSpan.matches(':hover'))) hide(pop); }
+  function clearHide(){ if(hideTimer){clearTimeout(hideTimer); hideTimer=null;} }
+  function maybeHide(){ if(isPinned) return; if(!pop.matches(':hover') && !(popSpan && popSpan.matches(':hover'))) hide(pop); }
 
-  // Hover (capture)
-  document.addEventListener('mouseover', (e) => {
-    const span = e.target.closest('.uw-annot'); if (!span) return;
-    clearHideTimer(); showPopoverFor(span);
-  }, true);
-  document.addEventListener('mouseout', (e) => {
-    if (!e.target.closest('.uw-annot') || isPinned) return;
-    clearHideTimer(); hideTimer = setTimeout(maybeHide, 220);
-  }, true);
-  pop.addEventListener('mouseenter', clearHideTimer);
-  pop.addEventListener('mouseleave', () => { if (!isPinned) maybeHide(); });
+  document.addEventListener('mouseover',e=>{ const s=e.target.closest('.uw-annot'); if(!s) return; clearHide(); showPopoverFor(s); },true);
+  document.addEventListener('mouseout',e=>{ if(!e.target.closest('.uw-annot') || isPinned) return; clearHide(); hideTimer=setTimeout(maybeHide,220); },true);
+  pop.addEventListener('mouseenter',clearHide);
+  pop.addEventListener('mouseleave',()=>{ if(!isPinned) maybeHide(); });
 
-  // NEW: Also open popover on CLICK (reliable on SharePoint etc.)
-  document.addEventListener('click', (e) => {
-    const s = e.target.closest('.uw-annot');
-    if (!s) return;
-    e.preventDefault();
-    e.stopPropagation();
-    clearHideTimer();
-    showPopoverFor(s);
-    isPinned = true;
-    popPin.classList.add('active');
-  }, true);
+  // also open on click (more reliable on complex pages)
+  document.addEventListener('click',e=>{
+    const s=e.target.closest('.uw-annot'); if(!s) return;
+    e.preventDefault(); e.stopPropagation();
+    clearHide(); showPopoverFor(s); isPinned=true; popPin.classList.add('active');
+  },true);
 
-  popPin.addEventListener('click', () => {
-    isPinned = !isPinned;
-    popPin.classList.toggle('active', isPinned);
-    if (!isPinned) maybeHide();
-  });
-  popClose.addEventListener('click', () => { isPinned=false; popPin.classList.remove('active'); hide(pop); });
+  popPin.addEventListener('click',()=>{ isPinned=!isPinned; popPin.classList.toggle('active',isPinned); if(!isPinned) maybeHide(); });
+  popClose.addEventListener('click',()=>{ isPinned=false; popPin.classList.remove('active'); hide(pop); });
 
-  // EDIT
-  popEdit.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (!popSpan) return;
-    const rec = getRecForSpan(popSpan); if (!rec) return;
-    isPinned = false; popPin.classList.remove('active'); hide(pop);
+  popEdit.addEventListener('click',e=>{
+    e.stopPropagation(); if(!popSpan) return;
+    const rec=getRecForSpan(popSpan); if(!rec) return;
+    isPinned=false; popPin.classList.remove('active'); hide(pop);
 
-    edText.value = rec.noteMd || '';
-    if (rec.color && rec.color.startsWith('#')) { edHex = rec.color; edColor='custom'; edPicker.value=rec.color; addSwatch(rec.color); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop); }
+    edText.value=rec.noteMd||'';
+    if(rec.color && rec.color.startsWith('#')){ edHex=rec.color; edColor='custom'; edPicker.value=rec.color; addSwatch(rec.color); renderCustoms(); bindCustomClicks(editor); bindCustomClicks(pop); }
     else { edHex=null; edColor=rec.color||'yellow'; edPicker.value=guessHexFromName(edColor); }
-    edDots.forEach(x => x.classList.toggle('active', x.dataset.c === edColor));
+    edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
 
-    const rect = popSpan.getBoundingClientRect();
-    showAt(editor, rect.left + window.scrollX, rect.bottom + window.scrollY + 10);
-    edText.focus();
+    const rect=popSpan.getBoundingClientRect();
+    showAt(editor, rect.left+window.scrollX, rect.bottom+window.scrollY+10); edText.focus();
 
-    edSave.onclick = () => {
-      const newColor = edHex ? edHex : edColor;
-      const updated = updateByUid(rec.uid, r => ({...r, noteMd: edText.value || '', color: newColor}));
-      if (updated){
-        const span = document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`);
-        if (span){ applyColor(span, updated.color); span.setAttribute('data-md', updated.noteMd); }
-      }
-      if (newColor.startsWith && newColor.startsWith('#')) { addSwatch(newColor); }
-      edSave.onclick = saveNew; hide(editor);
+    edSave.onclick=()=>{
+      const newColor=edHex?edHex:edColor;
+      const updated=updateByUid(rec.uid, r=>({...r, noteMd:edText.value||'', color:newColor}));
+      if(updated){ const sp=document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`); if(sp){ applyColor(sp,updated.color); sp.setAttribute('data-md', updated.noteMd); } }
+      if(newColor.startsWith && newColor.startsWith('#')) addSwatch(newColor);
+      edSave.onclick=saveNew; hide(editor);
     };
   });
 
-  // DELETE
-  popDel.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (!popSpan) return;
-    const uidVal = popSpan.getAttribute('data-uid');
-    let removed = false;
-    if (uidVal) removed = deleteByUid(uidVal);
-    if (!removed) {
-      const a = spanAnchorFromDataset(popSpan);
-      if (a) removed = deleteByAnchor(a);
-    }
-    const span = popSpan, parent = span.parentNode;
-    while (span.firstChild) parent.insertBefore(span.firstChild, span);
-    parent.removeChild(span);
-    hide(pop);
-    setTimeout(hydrateOnce, 20);
+  popDel.addEventListener('click',e=>{
+    e.stopPropagation(); if(!popSpan) return;
+    const uidVal=popSpan.getAttribute('data-uid');
+    let removed=false;
+    if(uidVal) removed=deleteByUid(uidVal);
+    if(!removed){ const a=spanAnchorFromDataset(popSpan); if(a) removed=deleteByAnchor(a); }
+    const span=popSpan, p=span.parentNode; while(span.firstChild) p.insertBefore(span.firstChild, span); p.removeChild(span);
+    hide(pop); setTimeout(hydrateOnce,20);
   });
 
-  // Swatches in popover
-  popDots.forEach(s=>s.addEventListener('click',(e)=>{
-    e.stopPropagation();
-    if (!popSpan) return;
-    const c = s.dataset.c; popDots.forEach(x=>x.classList.toggle('active', x===s));
-    applyColor(popSpan, c);
-    const rec = getRecForSpan(popSpan);
-    if (rec) updateByUid(rec.uid, r => ({...r, color:c}));
+  popDots.forEach(s=>s.addEventListener('click',e=>{
+    e.stopPropagation(); if(!popSpan) return;
+    const c=s.dataset.c; popDots.forEach(x=>x.classList.toggle('active', x===s));
+    applyColor(popSpan,c);
+    const rec=getRecForSpan(popSpan); if(rec) updateByUid(rec.uid,r=>({...r,color:c}));
   }));
-  popPicker.addEventListener('input', (e)=>{
-    if (!popSpan) return;
-    const hex = e.target.value;
-    applyColor(popSpan, hex);
-    popDots.forEach(x=>x.classList.remove('active'));
-    const rec = getRecForSpan(popSpan);
-    if (rec) updateByUid(rec.uid, r => ({...r, color:hex}));
+  popPicker.addEventListener('input',e=>{
+    if(!popSpan) return; const hex=e.target.value; applyColor(popSpan,hex); popDots.forEach(x=>x.classList.remove('active'));
+    const rec=getRecForSpan(popSpan); if(rec) updateByUid(rec.uid,r=>({...r,color:hex}));
   });
-  popPicker.addEventListener('change', (e)=> addSwatch(e.target.value));
+  popPicker.addEventListener('change',e=> addSwatch(e.target.value));
 
-  // ---------- HELPERS ----------
-  function div(cls, html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
+  /* -------------------- HELPERS -------------------- */
+  function div(cls,html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
   function colors(){ return ['yellow','green','blue','pink','orange']; }
   function dot(c){ return `<span class="uw-color" data-c="${c}" title="${c}"></span>`; }
-  function showAt(node,x,y){ node.style.left=Math.round(x)+'px'; node.style.top=Math.round(y)+'px'; node.style.display='block'; }
-  function hide(node){ node.style.display='none'; }
-  function uid(){ return 'u' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
+  function showAt(n,x,y){ n.style.left=Math.round(x)+'px'; n.style.top=Math.round(y)+'px'; n.style.display='block'; }
+  function hide(n){ n.style.display='none'; }
+  const uid = ()=>'u'+Math.random().toString(36).slice(2)+Date.now().toString(36);
 
   function getXPath(node){
-    if (!node) return null;
-    const parts=[];
-    while (node && node.nodeType !== Node.DOCUMENT_NODE) {
-      let i=1, sib=node.previousSibling;
-      while (sib) { if (sib.nodeName === node.nodeName) i++; sib=sib.previousSibling; }
-      parts.unshift(node.nodeType===Node.TEXT_NODE ? `text()[${i}]` : `${node.nodeName.toLowerCase()}[${i}]`);
-      node=node.parentNode;
+    if(!node) return null; const parts=[];
+    while(node && node.nodeType!==Node.DOCUMENT_NODE){
+      let i=1,s=node.previousSibling; while(s){ if(s.nodeName===node.nodeName) i++; s=s.previousSibling; }
+      parts.unshift(node.nodeType===Node.TEXT_NODE?`text()[${i}]`:`${node.nodeName.toLowerCase()}[${i}]`); node=node.parentNode;
     }
-    return '/' + parts.join('/');
+    return '/'+parts.join('/');
   }
-  function resolveXPath(xpath){
-    try { return document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue || null; }
-    catch { return null; }
-  }
-  function rangeToAnchor(r){
-    return { startXPath:getXPath(r.startContainer), startOffset:r.startOffset,
-             endXPath:getXPath(r.endContainer),     endOffset:r.endOffset };
-  }
+  function resolveXPath(x){ try{ return document.evaluate(x,document,null,XPathResult.FIRST_ORDERED_NODE_TYPE,null).singleNodeValue||null; }catch{ return null; } }
+  const rangeToAnchor = r => ({ startXPath:getXPath(r.startContainer), startOffset:r.startOffset, endXPath:getXPath(r.endContainer), endOffset:r.endOffset });
   function anchorToRange(a){
-    const sc = resolveXPath(a.startXPath), ec = resolveXPath(a.endXPath);
-    if (!sc || !ec) return null;
-    try {
-      const r = document.createRange();
-      r.setStart(sc, Math.min(a.startOffset, (sc.nodeValue||'').length));
-      r.setEnd(ec, Math.min(a.endOffset, (ec.nodeValue||'').length));
-      return r.collapsed ? null : r;
-    } catch { return null; }
+    const sc=resolveXPath(a.startXPath), ec=resolveXPath(a.endXPath); if(!sc||!ec) return null;
+    try{ const r=document.createRange(); r.setStart(sc,Math.min(a.startOffset,(sc.nodeValue||'').length)); r.setEnd(ec,Math.min(a.endOffset,(ec.nodeValue||'').length)); return r.collapsed?null:r; }catch{ return null; }
   }
   function spanAnchorFromDataset(span){
-    const sx = span.getAttribute('data-sx'), so = span.getAttribute('data-so'),
-          ex = span.getAttribute('data-ex'), eo = span.getAttribute('data-eo');
-    if (!sx || !ex || so==null || eo==null) return null;
-    return { startXPath:sx, startOffset:+so, endXPath:ex, endOffset:+eo };
+    const sx=span.getAttribute('data-sx'), so=span.getAttribute('data-so'), ex=span.getAttribute('data-ex'), eo=span.getAttribute('data-eo');
+    if(!sx||!ex||so==null||eo==null) return null; return { startXPath:sx,startOffset:+so,endXPath:ex,endOffset:+eo };
+  }
+  function wrapRange(range,rec){
+    if(document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`)) return;
+    if(range.commonAncestorContainer && range.commonAncestorContainer.parentElement && range.commonAncestorContainer.parentElement.closest && range.commonAncestorContainer.parentElement.closest('.uw-annot')) return;
+    const span=document.createElement('span');
+    span.className='uw-annot';
+    span.setAttribute('data-uid',rec.uid);
+    span.setAttribute('data-md',rec.noteMd||'');
+    span.setAttribute('data-sx',rec.startXPath); span.setAttribute('data-so',rec.startOffset);
+    span.setAttribute('data-ex',rec.endXPath);   span.setAttribute('data-eo',rec.endOffset);
+    applyColor(span, rec.color||'yellow');
+    try{ range.surroundContents(span); }
+    catch{ const tmp=document.createElement('span'); tmp.textContent=range.toString(); span.appendChild(tmp); range.deleteContents(); range.insertNode(span); }
+  }
+  function applyColor(span,color){
+    if(color && color.startsWith && color.startsWith('#')){ span.setAttribute('data-color','custom'); span.setAttribute('data-hex',normalizeHex(color)); span.style.background=hexToRgba(color,0.6); }
+    else{ span.setAttribute('data-color',color||'yellow'); span.removeAttribute('data-hex'); span.style.background=''; }
+  }
+  function hexToRgba(hex,a){ const m=/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(normalizeHex(hex)); if(!m) return hex; const r=parseInt(m[1],16), g=parseInt(m[2],16), b=parseInt(m[3],16); return `rgba(${r},${g},${b},${a==null?0.6:a})`; }
+  function guessHexFromName(n){ return ({yellow:'#ffe600',green:'#80e680',blue:'#8abaff',pink:'#ff8ad2',orange:'#ffc266'})[n] || '#ffe600'; }
+
+  /* -------------------- HYDRATE -------------------- */
+  function hydrateOnce(){
+    const arr=load();
+    for(const r of arr){
+      if(document.querySelector(`.uw-annot[data-uid="${r.uid}"]`)) continue;
+      const rng=anchorToRange(r); if(rng){ try{ wrapRange(rng,r); }catch{} }
+    }
+  }
+  const mo=new MutationObserver(()=>{ clearTimeout(mo._t); mo._t=setTimeout(hydrateOnce,400); });
+  mo.observe(document.documentElement,{childList:true,subtree:true});
+
+  if(typeof GM_registerMenuCommand==='function'){
+    GM_registerMenuCommand('Add highlight from selection',()=>{
+      const sel=getSelection(); if(!sel||sel.rangeCount===0) return;
+      const r=sel.getRangeAt(0); if(r.collapsed) return;
+      pendingRange=r.cloneRange(); pendingAnchor=rangeToAnchor(pendingRange);
+      edText.value=''; edColor='yellow'; edHex=null; edPicker.value='#ffe600';
+      edDots.forEach(x=>x.classList.toggle('active', x.dataset.c===edColor));
+      const rc=selectionRect(r); if(!rc) return;
+      showAt(editor, rc.left+window.scrollX, rc.bottom+window.scrollY+10); edText.focus();
+    });
+    GM_registerMenuCommand('List annotations',()=>{
+      const arr=load(); if(!arr.length) return alert('No annotations for this page.');
+      alert(arr.map(a=>`${a.uid}  [${a.color}]  ${a.exact?.slice(0,60)||'(xpath)'} …`).join('\n'));
+    });
   }
 
-  function wrapRange(range, rec){
-    if (document.querySelector(`.uw-annot[data-uid="${rec.uid}"]`)) return;
-    if (range.commonAncestorContainer &&
-        range.commonAncestorContainer.parentElement &&
-        range.commonAncestorContainer.parentElement.closest &&
-        range.commonAncestorContainer.parentElement.closest('.uw-annot')) return;
-
-    const span = document.createElement('span');
-    span.className = 'uw-annot';
-    span.setAttribute('data-uid', rec.uid);
-    span.setAttribute('data-md',  rec.noteMd || '');
-    span.setAttribute('data-sx', rec.startXPath);
-    span.setAttribute('data-so', rec.startOffset);
-    span.setAttribute('data-ex', rec.endXPath);
-    span.setAttribute('data-eo', rec.endOffset);
-   
+  hydrateOnce();
+  setTimeout(hydrateOnce,1000);
+})();
