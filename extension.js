@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Persistent Highlighter + Notes — v4.0.1 (List→Paragraph Gap + Saved/Removable Custom Swatches)
+// @name         Persistent Highlighter + Notes — v4.0.2 (List→Paragraph Gap + Saved/Removable Custom Swatches)
 // @namespace    qt-highlighter
-// @version      4.0.1
-// @description  Select text → Add → Markdown note. Hover shows popover (edit, delete, pin, color incl. picker & saved custom swatches you can right-click to remove). Robust persistence (GM storage + XPath), SPA-safe.
+// @version      4.0.2
+// @description  Select text → Add → Markdown note. Hover shows popover (edit, delete, pin, color incl. picker & saved custom swatches you can right-click OR Alt-click to remove). Robust persistence (GM storage + XPath), SPA-safe.
 // @match        *://*/*
 // @exclude      *://*/*.pdf*
 // @run-at       document-end
@@ -90,18 +90,22 @@
   // persistent custom swatches
   const SWATCH_KEY = 'uw_custom_swatches';
   const loadSwatches = () => { try { return JSON.parse(GM_getValue(SWATCH_KEY, '[]')); } catch { return []; } };
-  const saveSwatches = (arr) => GM_setValue(SWATCH_KEY, JSON.stringify(arr.slice(0,8)));
+  const saveSwatches = (arr) => GM_Set(SWATCH_KEY, JSON.stringify(arr.slice(0,8)));
+  // small helper to be robust on some userscript engines
+  function GM_Set(k,v){ try{ GM_setValue(k,v);}catch{ localStorage.setItem(k,v);} }
+  function GM_Get(k,d){ try{ return GM_getValue(k,d);}catch{ const v=localStorage.getItem(k); return v==null?d:v; } }
+
   function addSwatch(hex){
     hex = normalizeHex(hex);
     if (!hex) return;
     const arr = loadSwatches();
-    if (!arr.includes(hex)) { arr.unshift(hex); saveSwatches(arr); renderCustoms(); }
+    if (!arr.includes(hex)) { arr.unshift(hex); GM_Set(SWATCH_KEY, JSON.stringify(arr.slice(0,8))); renderCustoms(); }
   }
   function removeSwatch(hex){
     hex = normalizeHex(hex);
     if (!hex) return;
     const arr = loadSwatches().filter(h => h !== hex);
-    saveSwatches(arr);
+    GM_Set(SWATCH_KEY, JSON.stringify(arr));
     renderCustoms();
     // rebind after DOM update
     bindCustomClicks(editor);
@@ -217,7 +221,7 @@ Double Enter = new paragraph."></textarea>
   // render saved custom swatches in both places
   function renderCustoms(){
     const sw = loadSwatches();
-    const mk = hex => `<span class="uw-color uw-custom" data-hex="${hex}" title="${hex} (right-click to remove)" style="background:${hex};"></span>`;
+    const mk = hex => `<span class="uw-color uw-custom" data-hex="${hex}" title="${hex}  (right-click OR Alt-click to remove)" style="background:${hex};"></span>`;
     edCustoms.innerHTML  = sw.map(mk).join('');
     popCustoms.innerHTML = sw.map(mk).join('');
   }
@@ -225,10 +229,19 @@ Double Enter = new paragraph."></textarea>
 
   function bindCustomClicks(scope){
     scope.querySelectorAll('.uw-custom').forEach(el=>{
-      // left-click → pick color
-      el.onclick = (e)=>{
+      // left-click → pick  (unless Alt is held, then delete)
+      el.addEventListener('click', (e)=>{
         const hex = e.currentTarget.getAttribute('data-hex');
         if (!hex) return;
+        if (e.altKey) {
+          // Alt-click delete with double confirm
+          if (!confirm(`Remove saved color ${hex}?`)) return;
+          if (!confirm('Are you absolutely sure? This cannot be undone.')) return;
+          removeSwatch(hex);
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
         if (scope === editor){
           edHex = hex; edColor='custom'; edPicker.value = hex;
           edDots.forEach(x=>x.classList.remove('active'));
@@ -239,16 +252,18 @@ Double Enter = new paragraph."></textarea>
           const rec = getRecForSpan(popSpan);
           if (rec) updateByUid(rec.uid, r => ({...r, color:hex}));
         }
-      };
-      // RIGHT-CLICK → remove swatch (double confirm)
+      }, {capture:true});
+
+      // RIGHT-CLICK → remove swatch (double confirm) with capture to beat site handlers
       el.addEventListener('contextmenu', (ev)=>{
         ev.preventDefault();
+        ev.stopPropagation();
         const hex = ev.currentTarget.getAttribute('data-hex');
         if (!hex) return;
         if (!confirm(`Remove saved color ${hex}?`)) return;
         if (!confirm('Are you absolutely sure? This cannot be undone.')) return;
         removeSwatch(hex);
-      });
+      }, {capture:true});
     });
   }
   bindCustomClicks(editor);
@@ -555,16 +570,4 @@ Double Enter = new paragraph."></textarea>
   // ---------- BOOT ----------
   hydrateOnce();
   setTimeout(hydrateOnce, 1000);
-
-  // ---------- tiny helpers ----------
-  function colors(){ return ['yellow','green','blue','pink','orange']; }
-  function dot(c){ return `<span class="uw-color" data-c="${c}" title="${c}"></span>`; }
-  function div(cls, html){ const d=document.createElement('div'); d.className=cls; d.innerHTML=html; return d; }
-  function showAt(node,x,y){ node.style.left=Math.round(x)+'px'; node.style.top=Math.round(y)+'px'; node.style.display='block'; }
-  function hide(node){ node.style.display='none'; }
-  function uid(){ return 'u' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
-  function rangeToAnchor(r){ return { startXPath:getXPath(r.startContainer), startOffset:r.startOffset, endXPath:getXPath(r.endContainer), endOffset:r.endOffset }; }
-  function getXPath(node){ if (!node) return null; const parts=[]; while (node && node.nodeType!==Node.DOCUMENT_NODE){ let i=1,s=node.previousSibling; while(s){ if(s.nodeName===node.nodeName) i++; s=s.previousSibling; } parts.unshift(node.nodeType===Node.TEXT_NODE?`text()[${i}]`:`${node.nodeName.toLowerCase()}[${i}]`); node=node.parentNode; } return '/'+parts.join('/'); }
-  function resolveXPath(x){ try{ return document.evaluate(x, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue||null; }catch{ return null; } }
-  function anchorToRange(a){ const sc=resolveXPath(a.startXPath), ec=resolveXPath(a.endXPath); if(!sc||!ec) return null; try{ const r=document.createRange(); r.setStart(sc, Math.min(a.startOffset,(sc.nodeValue||'').length)); r.setEnd(ec, Math.min(a.endOffset,(ec.nodeValue||'').length)); return r.collapsed?null:r; }catch{ return null; } }
 })();
